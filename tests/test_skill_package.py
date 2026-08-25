@@ -70,6 +70,15 @@ class SkillPackageTests(unittest.TestCase):
         for token in ("视口锁定", "预设母版", "保存状态", "视觉检查"):
             self.assertIn(token, quality)
 
+    def test_material_evidence_history_stays_inside_current_project_scope(self):
+        material = (SKILL / "references" / "material-evidence-rules.md").read_text(encoding="utf-8")
+        for token in (
+            "可证明属于当前项目", "本地任务工具", "用户提供的本地导出",
+            "禁止查询、引用或依赖通用 ChatGPT 云端历史", "单独提供到当前项目范围内",
+        ):
+            self.assertIn(token, material)
+        self.assertNotIn("被历史工具返回时才可引用", material)
+
 
 if __name__ == "__main__":
     unittest.main()
