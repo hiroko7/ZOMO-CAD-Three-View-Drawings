@@ -1,6 +1,6 @@
 interface:
   display_name: ZOMO-CAD-Three View Drawings
   short_description: 将 Rhino、SketchUp 或 DWG 整理为公司标准三视图施工图
-  default_prompt: 根据当前模型和项目资料，使用公司 CAD 预设生成或调整平面、正立面和侧立面施工图。
+  default_prompt: 根据当前模型和项目资料，仅分析、解释或准备方案；实际出图、绘制、调整、修改或更新必须获得用户明确请求。
 policy:
   allow_implicit_invocation: true

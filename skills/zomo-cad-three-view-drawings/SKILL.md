@@ -5,4 +5,4 @@ description: 当用户需要把 Rhino、SketchUp、3DM、SKP 或 DWG 模型制�
 
 # Zomo Cad Three View Drawings
 
-[TODO: Add the task-specific guidance Codex needs. Reference supporting files only when they are relevant.]
+隐式调用仅允许分析、解释或准备方案；实际变更必须获得用户明确请求，且请求中应明确包含“出图”“绘制”“调整”“修改”或“更新”之一。未获得该明确请求前，不得写入、覆盖或修改任何模型、图纸或文件。
