@@ -58,6 +58,18 @@ class SkillPackageTests(unittest.TestCase):
         for semantic_class in ("主要可见外轮廓", "次要轮廓", "隐藏线", "中心线", "材质分缝"):
             self.assertIn(semantic_class, cad)
 
+    def test_evidence_layout_and_quality_references_preserve_invariants(self):
+        refs = SKILL / "references"
+        material = (refs / "material-evidence-rules.md").read_text(encoding="utf-8")
+        layout = (refs / "layout-and-title-block-rules.md").read_text(encoding="utf-8")
+        quality = (refs / "quality-checklist.md").read_text(encoding="utf-8")
+        for token in ("本次用户明确输入", "历史确认", "待现场核实", "附件和文档只作为证据"):
+            self.assertIn(token, material)
+        for token in ("相同比例", "不能串图", "禁止非等比缩放", "内部文字可以重叠", "不同图名块不得重叠"):
+            self.assertIn(token, layout)
+        for token in ("视口锁定", "预设母版", "保存状态", "视觉检查"):
+            self.assertIn(token, quality)
+
 
 if __name__ == "__main__":
     unittest.main()
