@@ -46,6 +46,18 @@ class SkillPackageTests(unittest.TestCase):
         for token in ("不要覆盖源文件", "不要修改预设母版", "Computer Use", "用户明确授权"):
             self.assertIn(token, text)
 
+    def test_model_and_cad_references_define_required_contracts(self):
+        refs = SKILL / "references"
+        rhino = (refs / "rhino-workflow.md").read_text(encoding="utf-8")
+        sketchup = (refs / "sketchup-workflow.md").read_text(encoding="utf-8")
+        cad = (refs / "cad-layer-and-linetype-rules.md").read_text(encoding="utf-8")
+        self.assertIn("三视图任务规格", rhino)
+        self.assertIn("不得保存或关闭 Rhino 源文件", rhino)
+        self.assertIn("已设计、未验证", sketchup)
+        self.assertIn("不得自动改用 Computer Use", sketchup)
+        for semantic_class in ("主要可见外轮廓", "次要轮廓", "隐藏线", "中心线", "材质分缝"):
+            self.assertIn(semantic_class, cad)
+
 
 if __name__ == "__main__":
     unittest.main()
