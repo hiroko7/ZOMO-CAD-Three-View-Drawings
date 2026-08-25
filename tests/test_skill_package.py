@@ -29,6 +29,23 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("仅分析、解释或准备方案", yaml_text)
         self.assertIn("明确请求", yaml_text)
 
+    def test_entrypoint_routes_modes_and_references(self):
+        text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        for token in (
+            "Rhino MCP", "SketchUp MCP", "AutoCAD CAD MCP",
+            "references/rhino-workflow.md",
+            "references/sketchup-workflow.md",
+            "references/material-evidence-rules.md",
+            "references/layout-and-title-block-rules.md",
+            "references/quality-checklist.md",
+        ):
+            self.assertIn(token, text)
+
+    def test_entrypoint_preserves_authorization_boundaries(self):
+        text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        for token in ("不要覆盖源文件", "不要修改预设母版", "Computer Use", "用户明确授权"):
+            self.assertIn(token, text)
+
 
 if __name__ == "__main__":
     unittest.main()
