@@ -580,6 +580,16 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("zomo:audit-hex-string-p", text)
         self.assertIn("preset-artifact-resolver", text)
 
+    def test_audit_preflight_blocks_writer_for_invalid_or_protected_report_paths(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        self.assertIn("zomo:audit-report-safe-to-write-p", text)
+        self.assertIn("recovery_failed", text)
+        self.assertIn("zomo:audit-protected-path-p", text)
+        self.assertIn("(eq (zomo:audit-value 'model-space evidence) t)", text)
+        self.assertIn("(eq (zomo:audit-value 'paper-space evidence) t)", text)
+        self.assertIn("(eq (zomo:audit-value 'layer-visible evidence) t)", text)
+        self.assertIn("(eq (zomo:audit-value 'viewport-contained evidence) t)", text)
+
 
 if __name__ == "__main__":
     unittest.main()
