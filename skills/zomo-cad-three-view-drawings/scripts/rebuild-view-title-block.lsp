@@ -178,12 +178,37 @@
     (setq result (cons (zomo:title-alist-value 'tag metadata) result)))
   (reverse result))
 
-(defun zomo:title-sort-tags (tags)
-  (vl-sort tags '(lambda (first second) (vl-string-lessp first second))))
+(defun zomo:title-remove-tag-once (tag tags / result removed item)
+  ;; Consume exactly one matching tag so duplicate multiplicity is preserved.
+  (setq result nil removed nil)
+  (foreach item tags
+    (if (and (not removed) (= (strcase tag) (strcase item)))
+      (setq removed t)
+      (setq result (cons item result))))
+  (list removed (reverse result)))
 
-(defun zomo:title-tag-sets-equal-p (first second)
-  (and (= (length first) (length second))
-       (equal (zomo:title-sort-tags first) (zomo:title-sort-tags second))))
+(defun zomo:title-tag-sets-equal-p (first second / remaining consumed equal)
+  ;; Exact multiset comparison: AAB and ABB must not compare equal.
+  (if (/= (length first) (length second))
+    nil
+    (progn
+      (setq remaining second equal t)
+      (while (and first equal)
+        (setq consumed (zomo:title-remove-tag-once (car first) remaining))
+        (if (car consumed)
+          (setq remaining (cadr consumed) first (cdr first))
+          (setq equal nil)))
+      (and equal (null remaining)))))
+
+(defun zomo:title-copyable-objects (objects / result object object-name)
+  ;; EXPLODE retains AcDbAttributeDefinition objects. They are intentionally
+  ;; excluded because definitions are recreated through vla-AddAttribute below.
+  (setq result nil)
+  (foreach object objects
+    (setq object-name (zomo:title-safe-get object 'ObjectName))
+    (if (or (null object-name) (/= object-name "AcDbAttributeDefinition"))
+      (setq result (cons object result))))
+  (reverse result))
 
 (defun zomo:title-filter-attribute-metadata (metadata-list expected-tags / result metadata)
   (setq result nil)
@@ -527,7 +552,7 @@
                            attributes occupied-rects tolerance / document blocks source
                            old-reference owner values base-point base-coordinates copy
                            exploded frame source-frame-bbox old-left old-right block-name
-                           new-block copied copied-list new-frame new-frame-bbox new-reference
+                           new-block copyable-exploded copied copied-list new-frame new-frame-bbox new-reference
                            new-bbox target-local-left target-local-right error-value success
                            attributes-restored delete-status review-needed source-definition
                            source-attribute-objects source-attribute-tags attribute-definitions
@@ -616,9 +641,11 @@
                             (progn
                               (setq new-block nil error-value "TITLE_BLOCK_CREATE_FAILED"))
                             (progn
-                              (setq copied
-                                (vl-catch-all-apply 'vla-CopyObjects
-                                  (list document (zomo:object-array exploded) new-block)))
+                              (setq copyable-exploded
+                                      (zomo:title-copyable-objects exploded)
+                                    copied
+                                      (vl-catch-all-apply 'vla-CopyObjects
+                                        (list document (zomo:object-array copyable-exploded) new-block)))
                               (if (vl-catch-all-error-p copied)
                                 (setq copied nil error-value "TITLE_CONTENT_COPY_FAILED")
                                 (progn
@@ -632,8 +659,10 @@
                                             new-block attribute-metadata
                                             source-local-left source-local-right
                                             target-local-left target-local-right)
+                                        ;; Enumerate the actual new block definition after
+                                        ;; AddAttribute; do not validate only the returned list.
                                         new-attribute-definitions
-                                          (zomo:title-alist-value 'objects attribute-rebuild-result)
+                                          (zomo:title-attribute-definitions new-block)
                                         new-definition-attribute-tags
                                           (zomo:title-tags-from-objects
                                             new-attribute-definitions)

@@ -234,7 +234,7 @@ class LispContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(valid_rect)
         body = valid_rect.group("body")
-        self.assertLess(body.index("(listp rect)"), body.index("(length rect)"))
+        self.assertLess(body.index("zomo:proper-list-p rect"), body.index("(length rect)"))
 
     def test_static_three_view_layout_rejects_malformed_nested_specs_before_assoc(self):
         text = self.read_script("arrange-three-view-layout.lsp").lower()
@@ -315,6 +315,49 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("expected-tags", restore.group("body"))
         self.assertIn("zomo:title-tag-sets-equal-p", restore.group("body"))
 
+    def test_static_title_rebuild_filters_exploded_attribute_definitions_and_enumerates_new_block(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        self.assertDefines(
+            "rebuild-view-title-block.lsp",
+            ("zomo:title-copyable-objects",),
+        )
+        copyable = re.search(
+            r"\(defun\s+zomo:title-copyable-objects(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(copyable)
+        self.assertIn('"acdbattributedefinition"', copyable.group("body"))
+        self.assertIn("zomo:title-copyable-objects exploded", text)
+        self.assertIn("zomo:object-array copyable-exploded", text)
+        self.assertIn("zomo:title-attribute-definitions new-block", text)
+
+    def test_static_title_tag_comparison_preserves_duplicate_multiplicity_aab_vs_abb(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        self.assertNotIn("vl-sort", text)
+        self.assertDefines(
+            "rebuild-view-title-block.lsp",
+            ("zomo:title-remove-tag-once", "zomo:title-tag-sets-equal-p"),
+        )
+        comparator = re.search(
+            r"\(defun\s+zomo:title-tag-sets-equal-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(comparator)
+        self.assertIn("zomo:title-remove-tag-once", comparator.group("body"))
+        self.assertIn("remaining", comparator.group("body"))
+
+        def multiset_equal(left, right):
+            remaining = list(right)
+            for tag in left:
+                try:
+                    remaining.remove(tag)
+                except ValueError:
+                    return False
+            return not remaining
+
+        self.assertTrue(multiset_equal(["A", "A", "B"], ["B", "A", "A"]))
+        self.assertFalse(multiset_equal(["A", "A", "B"], ["A", "B", "B"]))
+
     def test_static_title_rebuild_checks_content_containment_and_cleanup_commit_gate(self):
         text = self.read_script("rebuild-view-title-block.lsp").lower()
         self.assertDefines(
@@ -342,6 +385,29 @@ class LispContractTests(unittest.TestCase):
         old_delete = text.index("zomo:title-delete-status old-reference")
         cleanup_gate = text.index('(= cleanup-status "deleted")')
         self.assertLess(cleanup_gate, old_delete)
+
+    def test_static_three_view_layout_guards_all_geometry_lengths_and_catches_validator_boundary(self):
+        text = self.read_script("arrange-three-view-layout.lsp").lower()
+        self.assertDefines("arrange-three-view-layout.lsp", ("zomo:view-geometry-error",))
+        for function_name in (
+            "zomo:valid-rect-p",
+            "zomo:valid-model-center-p",
+            "zomo:valid-direction-p",
+        ):
+            function = re.search(
+                rf"\(defun\s+{re.escape(function_name)}(?P<body>[\s\S]*?)\n\s*\(defun",
+                text,
+            )
+            self.assertIsNotNone(function)
+            body = function.group("body")
+            self.assertLess(body.index("zomo:proper-list-p"), body.index("(length"))
+        geometry = re.search(
+            r"\(defun\s+zomo:view-geometry-error(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(geometry)
+        self.assertIn("vl-catch-all-apply", geometry.group("body"))
+        self.assertIn("geometry-error", text)
 
 
 if __name__ == "__main__":

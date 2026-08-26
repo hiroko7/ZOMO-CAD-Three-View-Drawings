@@ -79,7 +79,7 @@
 
 (defun zomo:valid-rect-p (rect)
   (and
-    (listp rect)
+    (zomo:proper-list-p rect)
     (= 4 (length rect))
     (vl-every 'numberp rect)
     (> (zomo:rect-width rect) 0.0)
@@ -87,7 +87,7 @@
 
 (defun zomo:valid-model-center-p (value)
   (and
-    (listp value)
+    (zomo:proper-list-p value)
     (>= (length value) 2)
     (numberp (car value))
     (numberp (cadr value))
@@ -95,10 +95,26 @@
 
 (defun zomo:valid-direction-p (value)
   (and
-    (listp value)
+    (zomo:proper-list-p value)
     (= 3 (length value))
     (vl-every 'numberp value)
     (> (apply '+ (mapcar 'abs value)) 1e-12)))
+
+(defun zomo:view-geometry-error (rect model-center view-direction / result)
+  ;; Keep the complete validator boundary inside catch so dotted values return
+  ;; the documented error alist instead of escaping as an unhandled LISP error.
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+        (cond
+          ((or (not (zomo:valid-rect-p rect))
+               (not (zomo:valid-model-center-p model-center)))
+            "INVALID_VIEW_GEOMETRY")
+          ((not (zomo:valid-direction-p view-direction))
+            "VIEW_DIRECTION_REQUIRED")
+          (t nil)))
+      nil))
+  (if (vl-catch-all-error-p result) "INVALID_VIEW_GEOMETRY" result))
 
 (defun zomo:viewport-from-handle (document handle / value)
   (if (and handle (= (type handle) 'STR))
@@ -207,7 +223,8 @@
 (defun zomo:arrange-three-view (view-specs paper-rect custom-scale / document layouts
                                 layout layout-block spec role rect model-center
                                 view-direction verifier handle viewport state plans plan
-                                snapshots created configured handles result ok message rollback-ok)
+                                snapshots created configured handles result geometry-error
+                                ok message rollback-ok)
   (cond
     ((not (zomo:valid-three-view-specs-p view-specs))
       (list (cons 'status "ERROR") (cons 'message "VIEW_ROLES_MUST_BE_FRONT_SIDE_PLAN")))
@@ -238,14 +255,14 @@
                   view-direction (zomo:alist-value 'view-direction spec)
                   verifier (zomo:alist-value 'isolation-verifier spec)
                   handle (zomo:alist-value 'viewport-handle spec)
-                  viewport (zomo:viewport-from-handle document handle))
+                  viewport (zomo:viewport-from-handle document handle)
+                  geometry-error
+                    (if (vl-catch-all-error-p rect)
+                      "INVALID_VIEW_GEOMETRY"
+                      (zomo:view-geometry-error rect model-center view-direction)))
             (cond
-              ((or (vl-catch-all-error-p rect)
-                   (not (zomo:valid-rect-p rect))
-                   (not (zomo:valid-model-center-p model-center)))
-                (setq ok nil message "INVALID_VIEW_GEOMETRY"))
-              ((not (zomo:valid-direction-p view-direction))
-                (setq ok nil message "VIEW_DIRECTION_REQUIRED"))
+              (geometry-error
+                (setq ok nil message geometry-error))
               ((/= (type verifier) 'SYM)
                 (setq ok nil message "VIEW_ISOLATION_REQUIRED"))
               (t
