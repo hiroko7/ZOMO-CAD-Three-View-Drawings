@@ -455,6 +455,57 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("vl-catch-all-apply", geometry.group("body"))
         self.assertIn("geometry-error", text)
 
+    def test_audit_contract(self):
+        self.assertDefines("audit-three-view-drawing.lsp", ("zomo:audit-three-view",))
+
+    def test_audit_covers_all_quality_checklist_invariants_and_honest_visual_status(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        required_codes = (
+            "viewport_count",
+            "viewport_locked",
+            "viewport_scale",
+            "view_isolation",
+            "title_viewport_left",
+            "title_viewport_right",
+            "title_viewport_width",
+            "title_uniform_scale",
+            "title_pair_overlap",
+            "dimension_visibility",
+            "spline_count",
+            "zero_length_count",
+            "invalid_geometry",
+            "frame_attributes",
+            "preset_checksum",
+            "output_saved",
+        )
+        for code in required_codes:
+            with self.subTest(code=code):
+                self.assertIn(code, text)
+        for key in ('"passed"', '"issues"', '"measurements"'):
+            with self.subTest(key=key):
+                self.assertIn(key, text)
+        for issue_key in ('"code"', '"role"', '"expected"', '"actual"', '"severity"'):
+            with self.subTest(issue_key=issue_key):
+                self.assertIn(issue_key, text)
+        self.assertIn('"visual_export_unavailable"', text)
+        self.assertIn('"warning"', text)
+        self.assertIn('"error"', text)
+
+    def test_audit_report_writer_is_utf8_escaped_and_explicit_about_write_errors(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        self.assertIn("(defun zomo:audit-json-escape", text)
+        for char_code in (8, 9, 10, 12, 13, 34, 92):
+            with self.subTest(char_code=char_code):
+                self.assertRegex(text, rf"\(=\s+code\s+{char_code}\)")
+        self.assertIn("\\u00", text)
+        self.assertRegex(
+            text,
+            r'\(vl-catch-all-apply\s+\'open\s+\(list\s+path\s+"w"\s+"utf8"\)\)',
+        )
+        self.assertIn("zomo_audit_three_view_write_error", text)
+        self.assertRegex(text, r"\(vl-catch-all-apply\s+'write-line")
+        self.assertRegex(text, r"\(vl-catch-all-apply\s+'close")
+
 
 if __name__ == "__main__":
     unittest.main()
