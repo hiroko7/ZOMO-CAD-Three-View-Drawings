@@ -537,6 +537,7 @@
 (defun zomo:audit-write-report (path json / temp backup stream write-result close-result published restored)
   ; Recoverable publication: a complete temp file is prepared before an existing
   ; JSON report is renamed to a backup.  No DWG/source/preset file is deleted.
+  ; Publication states: PUBLISHED, PUBLISH_FAILED_RESTORED, RECOVERY_FAILED.
   (if (not (zomo:audit-report-path-p path))
     (progn (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot open report path.") nil)
     (progn

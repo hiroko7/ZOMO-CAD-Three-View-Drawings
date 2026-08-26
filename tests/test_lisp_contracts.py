@@ -590,6 +590,13 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("(eq (zomo:audit-value 'layer-visible evidence) t)", text)
         self.assertIn("(eq (zomo:audit-value 'viewport-contained evidence) t)", text)
 
+    def test_audit_publication_boundary_returns_structured_statuses(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        for status in ("published", "publish_failed_restored", "recovery_failed"):
+            self.assertIn(status, text)
+        self.assertIn("protected-paths", text)
+        self.assertIn("zomo:audit-report-safe-to-write-p", text)
+
 
 if __name__ == "__main__":
     unittest.main()
