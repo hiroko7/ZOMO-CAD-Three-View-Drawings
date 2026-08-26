@@ -4,7 +4,23 @@
 ;; Static contract only: Task 9 must exercise these COM paths in an isolated DWG.
 
 (defun zomo:alist-value (key values / pair)
-  (if (setq pair (assoc key values)) (cdr pair) nil))
+  (if (and (zomo:alist-p values) (setq pair (assoc key values))) (cdr pair) nil))
+
+(defun zomo:proper-list-p (value)
+  (cond
+    ((null value) t)
+    ((atom value) nil)
+    (t (zomo:proper-list-p (cdr value)))))
+
+(defun zomo:alist-p (value)
+  (and
+    (zomo:proper-list-p value)
+    (vl-every
+      '(lambda (pair)
+        (and pair
+             (not (atom pair))
+             (or (= (type (car pair)) 'SYM) (= (type (car pair)) 'STR))))
+      value)))
 
 (defun zomo:role-name (value)
   (strcase
@@ -22,8 +38,9 @@
 
 (defun zomo:valid-three-view-specs-p (view-specs)
   (and
-    (listp view-specs)
+    (zomo:proper-list-p view-specs)
     (= 3 (length view-specs))
+    (vl-every 'zomo:alist-p view-specs)
     (= 1 (zomo:role-count "FRONT" view-specs))
     (= 1 (zomo:role-count "SIDE" view-specs))
     (= 1 (zomo:role-count "PLAN" view-specs))))

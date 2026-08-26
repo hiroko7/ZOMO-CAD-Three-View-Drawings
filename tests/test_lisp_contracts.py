@@ -236,6 +236,21 @@ class LispContractTests(unittest.TestCase):
         body = valid_rect.group("body")
         self.assertLess(body.index("(listp rect)"), body.index("(length rect)"))
 
+    def test_static_three_view_layout_rejects_malformed_nested_specs_before_assoc(self):
+        text = self.read_script("arrange-three-view-layout.lsp").lower()
+        self.assertDefines("arrange-three-view-layout.lsp", ("zomo:alist-p",))
+        validator = re.search(
+            r"\(defun\s+zomo:valid-three-view-specs-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(validator)
+        body = validator.group("body")
+        self.assertIn("(vl-every 'zomo:alist-p view-specs)", body)
+        self.assertLess(
+            body.index("(vl-every 'zomo:alist-p view-specs)"),
+            body.index("zomo:role-count"),
+        )
+
     def test_static_title_rebuild_copies_source_and_inserts_unit_scale(self):
         text = self.read_script("rebuild-view-title-block.lsp").lower()
         self.assertIn("vla-copy", text)
@@ -252,7 +267,7 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("zomo:title-overlaps-p", text)
         self.assertIn("zomo:cleanup-objects", text)
         self.assertIn("zomo:title-delete-status old-reference", text)
-        self.assertIn("title_attribute_restore_failed", text)
+        self.assertIn("title_attribute_value_mismatch", text)
         self.assertIn("old_reference_delete_failed", text)
 
     def test_static_title_rebuild_uses_local_coordinates_and_actual_frame_bounds(self):
@@ -271,10 +286,62 @@ class LispContractTests(unittest.TestCase):
         )
         self.assertIn("new-bbox occupied-rects", text)
         self.assertIn("vlax-erased-p", text)
-        self.assertRegex(
-            text,
-            r"\(if\s+\(not\s+review-needed\)\s+\(zomo:cleanup-objects\s+exploded\)",
+        self.assertIn("(zomo:cleanup-objects exploded)", text)
+        self.assertIn('(= cleanup-status "deleted")', text)
+
+    def test_static_title_rebuild_recreates_attribute_definitions_and_verifies_tags_values(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        self.assertDefines(
+            "rebuild-view-title-block.lsp",
+            (
+                "zomo:title-attribute-definitions",
+                "zomo:title-attribute-definition-metadata",
+                "zomo:title-add-attribute-definition",
+                "zomo:title-tag-sets-equal-p",
+            ),
         )
+        self.assertRegex(text, r"\(vl-catch-all-apply\s+'vla-addattribute")
+        self.assertIn("vla-getconstantattributes", text)
+        self.assertIn("source-attribute-tags", text)
+        self.assertIn("new-definition-attribute-tags", text)
+        self.assertIn("new-reference-attribute-tags", text)
+        self.assertIn("title_attribute_tag_mismatch", text)
+        self.assertIn("title_attribute_value_mismatch", text)
+        restore = re.search(
+            r"\(defun\s+zomo:restore-title-attributes(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(restore)
+        self.assertIn("expected-tags", restore.group("body"))
+        self.assertIn("zomo:title-tag-sets-equal-p", restore.group("body"))
+
+    def test_static_title_rebuild_checks_content_containment_and_cleanup_commit_gate(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        self.assertDefines(
+            "rebuild-view-title-block.lsp",
+            (
+                "zomo:bbox-contained-p",
+                "zomo:title-objects-contained-p",
+                "zomo:cleanup-objects",
+            ),
+        )
+        self.assertIn("new-definition-contained", text)
+        self.assertIn("new-reference-attributes-contained", text)
+        self.assertIn("title_content_outside_frame", text)
+        self.assertIn("cleanup-status", text)
+        self.assertIn("title_cleanup_unconfirmed", text)
+        cleanup = re.search(
+            r"\(defun\s+zomo:cleanup-objects(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(cleanup)
+        self.assertIn("(while objects", cleanup.group("body"))
+        self.assertIn('(= delete-status "unknown")', cleanup.group("body"))
+        self.assertIn('(= delete-status "failed")', cleanup.group("body"))
+        self.assertIn("(setq cleanup-status (zomo:cleanup-objects exploded))", text)
+        old_delete = text.index("zomo:title-delete-status old-reference")
+        cleanup_gate = text.index('(= cleanup-status "deleted")')
+        self.assertLess(cleanup_gate, old_delete)
 
 
 if __name__ == "__main__":
