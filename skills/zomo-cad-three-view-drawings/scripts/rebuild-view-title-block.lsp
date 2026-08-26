@@ -381,11 +381,11 @@
                                   / object bbox center shift midpoint result ok same-object)
   (setq midpoint (/ (+ old-left old-right) 2.0) ok t)
   (foreach object objects
-    (if ok
+    (if (eq ok t)
       (progn
         (setq same-object (zomo:title-same-object-p object frame))
         (if (eq same-object :UNKNOWN)
-          (setq ok nil)
+          (setq ok :UNKNOWN)
           (if (not same-object)
             (progn
               (setq bbox (zomo:bbox object))
@@ -520,16 +520,22 @@
                                          ok object bbox same-object)
   (setq ok t)
   (foreach object objects
-    (if ok
-      (progn
-        (setq same-object (zomo:title-same-object-p object frame))
-        (if (eq same-object :UNKNOWN)
-          (setq ok nil)
-          (if (not same-object)
-            (progn
-              (setq bbox (zomo:bbox object))
-              (if (not (zomo:bbox-contained-p bbox frame-bbox tolerance))
-                (setq ok nil))))))))
+    (if (eq ok t)
+      (if (null frame)
+        (progn
+          ;; A nil frame means no object is exempt: check every object.
+          (setq bbox (zomo:bbox object))
+          (if (not (zomo:bbox-contained-p bbox frame-bbox tolerance))
+            (setq ok nil)))
+        (progn
+          (setq same-object (zomo:title-same-object-p object frame))
+          (if (eq same-object :UNKNOWN)
+            (setq ok :UNKNOWN)
+            (if (not same-object)
+              (progn
+                (setq bbox (zomo:bbox object))
+                (if (not (zomo:bbox-contained-p bbox frame-bbox tolerance))
+                  (setq ok nil))))))))
   ok)
 
 (defun zomo:title-translate-bbox (bbox offset / minimum maximum)
@@ -602,7 +608,7 @@
                            new-attribute-definitions new-definition-attribute-tags
                            new-definition-contained new-reference-attributes
                            new-reference-attribute-tags new-reference-attributes-contained
-                           new-frame-world-bbox cleanup-status)
+                           new-frame-world-bbox cleanup-status content-shift-status)
   (setq document (vla-get-ActiveDocument (vlax-get-acad-object))
         blocks (vla-get-Blocks document)
         source (zomo:title-object document source-handle)
@@ -668,11 +674,18 @@
                             (not
                               (zomo:title-set-frame-edges
                                 frame old-left old-right target-left target-right tolerance))
-                            (not
-                              (zomo:title-shift-content
-                                exploded frame old-left old-right target-left target-right))
+                            (eq
+                              (setq content-shift-status
+                                (zomo:title-shift-content
+                                  exploded frame old-left old-right target-left target-right))
+                              :UNKNOWN)
+                            (not content-shift-status)
                             (not (zomo:title-move-to-local exploded base-coordinates)))
-                        (setq error-value "TITLE_FRAME_REBUILD_FAILED")
+                        (progn
+                          (setq error-value "TITLE_FRAME_REBUILD_FAILED")
+                          (if (eq content-shift-status :UNKNOWN)
+                            (setq review-needed t
+                                  error-value "TITLE_IDENTITY_UNCONFIRMED")))
                         (progn
                           (setq block-name (zomo:unique-title-name blocks)
                                 new-block
@@ -707,21 +720,26 @@
                                         new-definition-attribute-tags
                                           (zomo:title-tags-from-objects
                                             new-attribute-definitions)
-                                        new-definition-contained
-                                          (and
-                                            (zomo:title-alist-value 'ok attribute-rebuild-result)
+                                         new-definition-contained
+                                           (and
+                                             (zomo:title-alist-value 'ok attribute-rebuild-result)
                                             new-frame-bbox
                                             (zomo:title-tag-sets-equal-p
                                               source-attribute-tags
                                               new-definition-attribute-tags)
                                             (zomo:title-objects-contained-p
-                                              (append copied-list new-attribute-definitions)
-                                              new-frame new-frame-bbox tolerance))
-                                        new-reference
-                                          (vl-catch-all-apply 'vla-InsertBlock
-                                            (list owner (zomo:pt3 base-coordinates)
-                                                  block-name 1.0 1.0 1.0 0.0)))
-                                  (if (vl-catch-all-error-p new-reference)
+                                               (append copied-list new-attribute-definitions)
+                                               new-frame new-frame-bbox tolerance))
+                                         new-reference
+                                           (if (eq new-definition-contained :UNKNOWN)
+                                             nil
+                                             (vl-catch-all-apply 'vla-InsertBlock
+                                               (list owner (zomo:pt3 base-coordinates)
+                                                     block-name 1.0 1.0 1.0 0.0))))
+                                   (if (eq new-definition-contained :UNKNOWN)
+                                     (setq review-needed t
+                                           error-value "TITLE_IDENTITY_UNCONFIRMED")
+                                     (if (vl-catch-all-error-p new-reference)
                                     (progn
                                       (setq new-reference nil error-value "TITLE_INSERT_FAILED"))
                                     (progn
@@ -739,19 +757,27 @@
                                                 (zomo:title-translate-bbox
                                                   new-frame-bbox base-coordinates)
                                                 nil)
-                                            new-reference-attributes-contained
-                                              (zomo:title-objects-contained-p
-                                                new-reference-attributes nil
-                                                new-frame-world-bbox tolerance)
-                                            new-bbox (zomo:bbox new-reference)
-                                            success
-                                              (and
-                                                new-definition-contained
-                                                (zomo:title-tag-sets-equal-p
-                                                  source-attribute-tags
-                                                  new-reference-attribute-tags)
-                                                attributes-restored
-                                                new-reference-attributes-contained
+                                             new-reference-attributes-contained
+                                               (zomo:title-objects-contained-p
+                                                 new-reference-attributes nil
+                                                 new-frame-world-bbox tolerance)
+                                             review-needed
+                                               (if (eq new-reference-attributes-contained :UNKNOWN)
+                                                 t
+                                                 review-needed)
+                                             error-value
+                                               (if (eq new-reference-attributes-contained :UNKNOWN)
+                                                 "TITLE_IDENTITY_UNCONFIRMED"
+                                                 error-value)
+                                             new-bbox (zomo:bbox new-reference)
+                                             success
+                                               (and
+                                                 (eq new-definition-contained t)
+                                                 (zomo:title-tag-sets-equal-p
+                                                   source-attribute-tags
+                                                   new-reference-attribute-tags)
+                                                 attributes-restored
+                                                 (eq new-reference-attributes-contained t)
                                                 (zomo:title-frame-bounds-match-p
                                                   new-frame-bbox
                                                   target-local-left target-local-right tolerance)
@@ -760,7 +786,7 @@
                                                 (not
                                                   (zomo:title-overlaps-p
                                                     new-bbox occupied-rects tolerance))))
-                                      (if (not success)
+                                       (if (and (not success) (not review-needed))
                                         (setq error-value
                                           (cond
                                             ((not
@@ -775,11 +801,11 @@
                                               "TITLE_ATTRIBUTE_TAG_MISMATCH")
                                             ((not attributes-restored)
                                               "TITLE_ATTRIBUTE_VALUE_MISMATCH")
-                                            ((or (not new-definition-contained)
-                                                 (not new-reference-attributes-contained))
+                                             ((or (not (eq new-definition-contained t))
+                                                  (not (eq new-reference-attributes-contained t)))
                                               "TITLE_CONTENT_OUTSIDE_FRAME")
                                             (t
-                                            "TITLE_INVARIANT_FAILED"))))))))))))))))
+                                            "TITLE_INVARIANT_FAILED"))))))))))))))))))
               ;; Exploded paper-space copies are always best-effort cleaned,
               ;; even when an earlier mutation already made the state uncertain.
               (setq cleanup-status (zomo:cleanup-objects exploded))

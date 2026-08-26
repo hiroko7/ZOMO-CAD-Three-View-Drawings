@@ -302,6 +302,7 @@ class LispContractTests(unittest.TestCase):
         self.assertIsNotNone(identity)
         self.assertIn("zomo:title-object-key", identity.group("body"))
         self.assertIn("vl-catch-all-apply", identity.group("body"))
+        self.assertIn("(if (vl-catch-all-error-p result) :unknown result)", identity.group("body"))
         self.assertIn("vla-get-handle", text)
         self.assertIn("vla-get-objectid", text)
         self.assertIn(":unknown", text)
@@ -309,6 +310,30 @@ class LispContractTests(unittest.TestCase):
         self.assertNotRegex(text, r"\(/=\s*object\s+frame\)")
         self.assertNotRegex(text, r"\(/=\s*frame\s+object\)")
         self.assertEqual(text.count("zomo:title-same-object-p object frame"), 2)
+
+    def test_static_title_containment_preserves_nil_frame_mode_and_unknown_review(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        contained = re.search(
+            r"\(defun\s+zomo:title-objects-contained-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(contained)
+        body = contained.group("body")
+        nil_frame = body.index("(null frame)")
+        identity = body.index("zomo:title-same-object-p object frame")
+        self.assertLess(nil_frame, identity)
+        self.assertIn("zomo:bbox-contained-p bbox frame-bbox tolerance", body)
+        self.assertIn("(setq ok :unknown)", body)
+        self.assertIn("(eq ok t)", body)
+
+        self.assertIn("content-shift-status", text)
+        self.assertIn("(eq new-definition-contained :unknown)", text)
+        self.assertIn("(eq new-reference-attributes-contained :unknown)", text)
+        self.assertIn('"title_identity_unconfirmed"', text)
+        self.assertIn('(cons \'status "review")', text)
+        identity_gate = text.index("(if (eq new-definition-contained :unknown)")
+        insert_call = text.index("'vla-insertblock")
+        self.assertLess(identity_gate, insert_call)
 
     def test_static_title_rebuild_recreates_attribute_definitions_and_verifies_tags_values(self):
         text = self.read_script("rebuild-view-title-block.lsp").lower()
