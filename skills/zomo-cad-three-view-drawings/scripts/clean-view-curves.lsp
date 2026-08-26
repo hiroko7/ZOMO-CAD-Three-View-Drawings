@@ -85,7 +85,7 @@
           (vl-catch-all-apply 'vlax-put-property (list target property value))))))
   target)
 
-(defun zomo:convert-spline (document object tolerance / entity points owner candidate error-value)
+(defun zomo:convert-spline (document object tolerance / entity points owner candidate delete-status)
   (setq entity (vlax-vla-object->ename object)
         points (vl-catch-all-apply 'zomo:spline-points (list entity tolerance)))
   (if (or (vl-catch-all-error-p points) (null points))
@@ -103,10 +103,13 @@
             nil
             (progn
               (zomo:copy-graphic-properties object candidate)
-              (setq error-value (vl-catch-all-apply 'vla-Delete (list object)))
-              (if (vl-catch-all-error-p error-value)
-                (progn (vla-Delete candidate) nil)
-                candidate))))))))
+              (setq delete-status (zomo:delete-object-status object))
+              (cond
+                ((= delete-status "DELETED") candidate)
+                ((= delete-status "FAILED")
+                  (zomo:delete-object-status candidate)
+                  'REVIEW)
+                (t 'REVIEW)))))))))
 
 (defun zomo:type-count-add (counts object-name / pair)
   (if (setq pair (assoc object-name counts))
@@ -135,23 +138,39 @@
   (setq value (vl-catch-all-apply 'vla-get-ObjectName (list object)))
   (not (vl-catch-all-error-p value)))
 
-(defun zomo:remove-line-duplicates (objects tolerance / outer inner first second removed)
-  (setq removed 0 outer objects)
-  (while outer
+(defun zomo:delete-object-status (object / result erased)
+  ;; UNKNOWN means COM raised and liveness cannot be proven; stop destructive work.
+  (setq result (vl-catch-all-apply 'vla-Delete (list object)))
+  (if (not (vl-catch-all-error-p result))
+    "DELETED"
+    (progn
+      (setq erased (vl-catch-all-apply 'vlax-erased-p (list object)))
+      (cond
+        ((vl-catch-all-error-p erased) "UNKNOWN")
+        (erased "DELETED")
+        ((zomo:live-object-p object) "FAILED")
+        (t "UNKNOWN")))))
+
+(defun zomo:remove-line-duplicates (objects tolerance / outer inner first second removed
+                                    destructive-ok delete-status)
+  (setq removed 0 outer objects destructive-ok t)
+  (while (and outer destructive-ok)
     (setq first (car outer) inner (cdr outer))
     (if (and first (zomo:live-object-p first))
-      (while inner
+      (while (and inner destructive-ok)
         (setq second (car inner))
         (if (and second
                  (zomo:live-object-p second)
                  (zomo:duplicate-line-p
                    (zomo:line-data first) (zomo:line-data second) tolerance))
           (progn
-            (vla-Delete second)
-            (setq removed (1+ removed))))
+            (setq delete-status (zomo:delete-object-status second))
+            (if (= delete-status "DELETED")
+              (setq removed (1+ removed))
+              (setq destructive-ok nil))))
         (setq inner (cdr inner))))
     (setq outer (cdr outer)))
-  removed)
+  (list removed destructive-ok))
 
 (defun zomo:shared-line-points (first second tolerance / a b c d)
   (setq a (car first) b (cadr first) c (car second) d (cadr second))
@@ -170,12 +189,13 @@
     (= (vla-get-Color first) (vla-get-Color second))))
 
 (defun zomo:merge-collinear-lines (document objects tolerance / outer inner first second
-                                    shared owner candidate merged)
-  (setq merged 0 outer objects)
-  (while outer
+                                    shared owner candidate merged destructive-ok
+                                    first-delete second-delete)
+  (setq merged 0 outer objects destructive-ok t)
+  (while (and outer destructive-ok)
     (setq first (car outer) inner (cdr outer))
     (if (and first (zomo:live-object-p first))
-      (while inner
+      (while (and inner destructive-ok)
         (setq second (car inner))
         (if (and
               second
@@ -192,20 +212,30 @@
                   candidate
                     (vl-catch-all-apply 'vla-AddLine
                       (list owner (zomo:pt3 (car shared)) (zomo:pt3 (caddr shared)))))
-            (if (not (vl-catch-all-error-p candidate))
+            (if (vl-catch-all-error-p candidate)
+              (setq destructive-ok nil)
               (progn
                 (zomo:copy-graphic-properties first candidate)
-                (vla-Delete first)
-                (vla-Delete second)
-                (setq first candidate merged (1+ merged))))))
+                (setq second-delete (zomo:delete-object-status second))
+                (cond
+                  ((= second-delete "DELETED")
+                    (setq first-delete (zomo:delete-object-status first))
+                    (if (= first-delete "DELETED")
+                      (setq first candidate merged (1+ merged))
+                      (setq destructive-ok nil)))
+                  ((= second-delete "FAILED")
+                    (zomo:delete-object-status candidate)
+                    (setq destructive-ok nil))
+                  (t (setq destructive-ok nil)))))))
         (setq inner (cdr inner))))
     (setq outer (cdr outer)))
-  merged)
+  (list merged destructive-ok))
 
 (defun zomo:clean-selection (selection tolerance / document count index entity object
                               object-name type-counts input-count spline-before
                               spline-after zero-removed duplicate-removed status
-                              curve-length line-objects candidate)
+                              curve-length line-objects candidate destructive-ok
+                              delete-status operation-result)
   (if (or (null selection) (not (numberp tolerance)) (<= tolerance 0.0))
     (list
       (cons 'input-count 0)
@@ -220,6 +250,7 @@
             input-count (sslength selection)
             index 0 spline-before 0 spline-after 0 zero-removed 0
             duplicate-removed 0 type-counts nil line-objects nil status "PASS")
+      (setq destructive-ok t)
       ;; Every object visited below comes from the caller's selection set.
       (while (< index input-count)
         (setq entity (ssname selection index)
@@ -230,27 +261,40 @@
         (if (= object-name "AcDbSpline")
           (setq spline-before (1+ spline-before)))
         (cond
-          ((and curve-length (<= curve-length tolerance))
-            (if (vl-catch-all-error-p
-                  (vl-catch-all-apply 'vla-Delete (list object)))
+          ((and destructive-ok curve-length (<= curve-length tolerance))
+            (setq delete-status (zomo:delete-object-status object))
+            (if (= delete-status "DELETED")
+              (setq zero-removed (1+ zero-removed))
               (progn
-                (setq status "REVIEW")
+                (setq status "REVIEW" destructive-ok nil)
                 (if (= object-name "AcDbSpline")
-                  (setq spline-after (1+ spline-after))))
-              (setq zero-removed (1+ zero-removed))))
-          ((= object-name "AcDbSpline")
+                  (setq spline-after (1+ spline-after))))))
+          ((and destructive-ok (= object-name "AcDbSpline"))
             (setq candidate (zomo:convert-spline document object tolerance))
-            (if (null candidate)
+            (cond
+              ((= candidate 'REVIEW)
+                (setq spline-after (1+ spline-after)
+                      status "REVIEW" destructive-ok nil))
+              ((null candidate)
               (progn
                 (setq spline-after (1+ spline-after)
-                      status "REVIEW"))))
+                      status "REVIEW")))))
           ((= object-name "AcDbLine")
             (setq line-objects (cons object line-objects))))
         (setq index (1+ index)))
       ;; Duplicate removal is deliberately limited to selected line objects.
-      (setq duplicate-removed
-        (zomo:remove-line-duplicates line-objects tolerance))
-      (zomo:merge-collinear-lines document line-objects tolerance)
+      (if destructive-ok
+        (progn
+          (setq operation-result
+            (zomo:remove-line-duplicates line-objects tolerance)
+                duplicate-removed (car operation-result)
+                destructive-ok (cadr operation-result))
+          (if destructive-ok
+            (progn
+              (setq operation-result
+                (zomo:merge-collinear-lines document line-objects tolerance)
+                    destructive-ok (cadr operation-result))))))
+      (if (not destructive-ok) (setq status "REVIEW"))
       (list
         (cons 'input-count input-count)
         (cons 'spline-count-before spline-before)

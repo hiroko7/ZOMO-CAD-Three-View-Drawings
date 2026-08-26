@@ -150,12 +150,12 @@ class LispContractTests(unittest.TestCase):
         self.assertRegex(text, r"\(vl-catch-all-apply\s+'write-line")
         self.assertRegex(text, r"\(vl-catch-all-apply\s+'close")
 
-    def test_geometry_layout_and_title_contracts(self):
+    def test_static_geometry_layout_and_title_function_contracts(self):
         self.assertDefines("clean-view-curves.lsp", ("zomo:clean-selection",))
         self.assertDefines("arrange-three-view-layout.lsp", ("zomo:arrange-three-view",))
         self.assertDefines("rebuild-view-title-block.lsp", ("zomo:rebuild-title",))
 
-    def test_curve_cleaner_is_selection_scoped_and_tolerance_guarded(self):
+    def test_static_curve_cleaner_is_selection_scoped_and_tolerance_guarded(self):
         text = self.read_script("clean-view-curves.lsp").lower()
         self.assertIn("sslength", text)
         self.assertIn("ssname", text)
@@ -168,7 +168,21 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("zomo:merge-collinear-lines", text)
         self.assertNotIn("_all", text)
 
-    def test_three_view_layout_uses_roles_and_locks_equal_scale_viewports(self):
+    def test_static_curve_cleaner_routes_destructive_com_through_guarded_helpers(self):
+        text = self.read_script("clean-view-curves.lsp").lower()
+        self.assertIn("(defun zomo:delete-object-status", text)
+        self.assertIn("destructive-ok", text)
+        self.assertIn('"unknown"', text)
+        self.assertIn("vlax-erased-p", text)
+        self.assertNotRegex(text, r"\(vla-delete\s+")
+        for creator in ("vla-add3dpoly", "vla-addline"):
+            with self.subTest(creator=creator):
+                self.assertRegex(
+                    text,
+                    rf"\(vl-catch-all-apply\s+'{creator}",
+                )
+
+    def test_static_three_view_layout_uses_roles_and_locks_equal_scale_viewports(self):
         text = self.read_script("arrange-three-view-layout.lsp").lower()
         for role in ('"front"', '"side"', '"plan"'):
             with self.subTest(role=role):
@@ -189,7 +203,39 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("vla-get-modeltype", text)
         self.assertIn("paper_layout_required", text)
 
-    def test_title_rebuild_copies_source_and_inserts_unit_scale(self):
+    def test_static_three_view_layout_requires_direction_isolation_and_rollback(self):
+        text = self.read_script("arrange-three-view-layout.lsp").lower()
+        self.assertIn("view-direction", text)
+        self.assertIn("isolation-verifier", text)
+        self.assertIn("vla-put-direction", text)
+        self.assertIn("view_isolation_required", text)
+        self.assertIn("view_isolation_failed", text)
+        self.assertDefines(
+            "arrange-three-view-layout.lsp",
+            ("zomo:viewport-state", "zomo:restore-viewport-state"),
+        )
+        for property_name in (
+            "center",
+            "width",
+            "height",
+            "viewcenter",
+            "viewtarget",
+            "customscale",
+            "displaylocked",
+            "viewporton",
+            "direction",
+        ):
+            with self.subTest(property_name=property_name):
+                self.assertIn(property_name, text)
+        valid_rect = re.search(
+            r"\(defun\s+zomo:valid-rect-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(valid_rect)
+        body = valid_rect.group("body")
+        self.assertLess(body.index("(listp rect)"), body.index("(length rect)"))
+
+    def test_static_title_rebuild_copies_source_and_inserts_unit_scale(self):
         text = self.read_script("rebuild-view-title-block.lsp").lower()
         self.assertIn("vla-copy", text)
         self.assertIn("vla-explode", text)
@@ -204,9 +250,26 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("target-right", text)
         self.assertIn("zomo:title-overlaps-p", text)
         self.assertIn("zomo:cleanup-objects", text)
-        self.assertIn("vla-delete old-reference", text)
+        self.assertIn("zomo:title-delete-status old-reference", text)
         self.assertIn("title_attribute_restore_failed", text)
         self.assertIn("old_reference_delete_failed", text)
+
+    def test_static_title_rebuild_uses_local_coordinates_and_actual_frame_bounds(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        self.assertDefines(
+            "rebuild-view-title-block.lsp",
+            ("zomo:title-move-to-local", "zomo:title-frame-bounds-match-p"),
+        )
+        self.assertIn("source-frame-bbox", text)
+        self.assertIn("new-frame-bbox", text)
+        self.assertIn("target-local-left", text)
+        self.assertIn("target-local-right", text)
+        self.assertRegex(
+            text,
+            r"'vla-add[\s\S]*?\(list\s+blocks\s+\(zomo:pt3\s+'?\(0\.0\s+0\.0\s+0\.0\)\)",
+        )
+        self.assertIn("new-bbox occupied-rects", text)
+        self.assertIn("vlax-erased-p", text)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 (vl-load-com)
 
 ;; This file expects zomo-common.lsp to be loaded first.
+;; Static contract only: Task 9 must exercise these COM paths in an isolated DWG.
 
 (defun zomo:alist-value (key values / pair)
   (if (setq pair (assoc key values)) (cdr pair) nil))
@@ -21,6 +22,7 @@
 
 (defun zomo:valid-three-view-specs-p (view-specs)
   (and
+    (listp view-specs)
     (= 3 (length view-specs))
     (= 1 (zomo:role-count "FRONT" view-specs))
     (= 1 (zomo:role-count "SIDE" view-specs))
@@ -60,10 +62,26 @@
 
 (defun zomo:valid-rect-p (rect)
   (and
+    (listp rect)
     (= 4 (length rect))
     (vl-every 'numberp rect)
     (> (zomo:rect-width rect) 0.0)
     (> (zomo:rect-height rect) 0.0)))
+
+(defun zomo:valid-model-center-p (value)
+  (and
+    (listp value)
+    (>= (length value) 2)
+    (numberp (car value))
+    (numberp (cadr value))
+    (or (null (caddr value)) (numberp (caddr value)))))
+
+(defun zomo:valid-direction-p (value)
+  (and
+    (listp value)
+    (= 3 (length value))
+    (vl-every 'numberp value)
+    (> (apply '+ (mapcar 'abs value)) 1e-12)))
 
 (defun zomo:viewport-from-handle (document handle / value)
   (if (and handle (= (type handle) 'STR))
@@ -77,7 +95,57 @@
         nil))
     nil))
 
-(defun zomo:configure-viewport (viewport rect model-center custom-scale / result)
+(defun zomo:viewport-state (viewport / result)
+  ;; Capture every property changed by this script before touching an existing viewport.
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+        (list
+          (cons 'Center (vla-get-Center viewport))
+          (cons 'Width (vla-get-Width viewport))
+          (cons 'Height (vla-get-Height viewport))
+          (cons 'ViewCenter (vla-get-ViewCenter viewport))
+          (cons 'ViewTarget (vla-get-ViewTarget viewport))
+          (cons 'CustomScale (vla-get-CustomScale viewport))
+          (cons 'DisplayLocked (vla-get-DisplayLocked viewport))
+          (cons 'ViewportOn (vla-get-ViewportOn viewport))
+          (cons 'Direction (vla-get-Direction viewport))))
+      nil))
+  (if (vl-catch-all-error-p result) nil result))
+
+(defun zomo:restore-viewport-state (viewport state / result)
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+        (vla-put-DisplayLocked viewport :vlax-false)
+        (vla-put-Center viewport (zomo:alist-value 'Center state))
+        (vla-put-Width viewport (zomo:alist-value 'Width state))
+        (vla-put-Height viewport (zomo:alist-value 'Height state))
+        (vla-put-ViewCenter viewport (zomo:alist-value 'ViewCenter state))
+        (vla-put-ViewTarget viewport (zomo:alist-value 'ViewTarget state))
+        (vla-put-Direction viewport (zomo:alist-value 'Direction state))
+        (vla-put-CustomScale viewport (zomo:alist-value 'CustomScale state))
+        (vla-put-ViewportOn viewport (zomo:alist-value 'ViewportOn state))
+        (vla-put-DisplayLocked viewport (zomo:alist-value 'DisplayLocked state))
+        t)
+      nil))
+  (and (not (vl-catch-all-error-p result)) result))
+
+(defun zomo:delete-created-viewport (viewport / result)
+  (setq result (vl-catch-all-apply 'vla-Delete (list viewport)))
+  (not (vl-catch-all-error-p result)))
+
+(defun zomo:rollback-viewports (snapshots created / ok pair viewport)
+  (setq ok t)
+  (foreach pair snapshots
+    (if (not (zomo:restore-viewport-state (car pair) (cdr pair)))
+      (setq ok nil)))
+  (foreach viewport created
+    (if (not (zomo:delete-created-viewport viewport))
+      (setq ok nil)))
+  ok)
+
+(defun zomo:configure-viewport (viewport rect model-center view-direction custom-scale / result)
   (setq result
     (vl-catch-all-apply
       '(lambda ()
@@ -88,16 +156,40 @@
         (vla-put-Height viewport (zomo:rect-height rect))
         (vla-put-ViewCenter viewport
           (vlax-2d-point (list (float (car model-center)) (float (cadr model-center)))))
-        (if (and (caddr model-center) (vlax-property-available-p viewport 'ViewTarget t))
-          (vla-put-ViewTarget viewport (zomo:pt3 model-center)))
+        (vla-put-ViewTarget viewport
+          (zomo:pt3
+            (list (float (car model-center))
+                  (float (cadr model-center))
+                  (float (if (caddr model-center) (caddr model-center) 0.0)))))
+        (vla-put-Direction viewport (zomo:pt3 view-direction))
         (vla-put-CustomScale viewport custom-scale)
         viewport)
       nil))
   (if (vl-catch-all-error-p result) nil result))
 
+(defun zomo:verify-view-isolation (verifier viewport spec / result)
+  ;; The caller-supplied verifier must confirm role-specific layer/scene isolation.
+  ;; Missing, undefined, errored, or false verifiers can never produce PASS.
+  (if (/= (type verifier) 'SYM)
+    nil
+    (progn
+      (setq result (vl-catch-all-apply verifier (list viewport spec)))
+      (and (not (vl-catch-all-error-p result)) result))))
+
+(defun zomo:lock-viewports (viewports / result viewport)
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+        (foreach viewport viewports
+          (vla-put-DisplayLocked viewport :vlax-true))
+        t)
+      nil))
+  (and (not (vl-catch-all-error-p result)) result))
+
 (defun zomo:arrange-three-view (view-specs paper-rect custom-scale / document layouts
                                 layout layout-block spec role rect model-center
-                                handle viewport created result handles configured)
+                                view-direction verifier handle viewport state plans plan
+                                snapshots created configured handles result ok message rollback-ok)
   (cond
     ((not (zomo:valid-three-view-specs-p view-specs))
       (list (cons 'status "ERROR") (cons 'message "VIEW_ROLES_MUST_BE_FRONT_SIDE_PLAN")))
@@ -111,67 +203,103 @@
             (getvar "CTAB"))))
       (list (cons 'status "ERROR") (cons 'message "PAPER_LAYOUT_REQUIRED")))
     (t
-      (setq configured t handles nil created nil)
-      ;; Resolve and validate every paper rectangle before modifying a viewport.
+      (setq document (vla-get-ActiveDocument (vlax-get-acad-object))
+            layouts (vla-get-Layouts document)
+            layout (vla-Item layouts (getvar "CTAB"))
+            layout-block (vla-get-Block layout)
+            plans nil snapshots nil ok t message nil)
+      ;; Preflight all caller input and snapshot every existing viewport before mutation.
       (foreach spec view-specs
-        (setq role (zomo:role-name (zomo:alist-value 'role spec))
-              rect
-                (vl-catch-all-apply 'zomo:view-paper-rect
-                  (list spec role paper-rect))
-              model-center (zomo:alist-value 'model-center spec))
-        (if (or (vl-catch-all-error-p rect)
-                (not (zomo:valid-rect-p rect))
-                (not (listp model-center))
-                (< (length model-center) 2))
-          (setq configured nil)))
-      (if (not configured)
-        (list (cons 'status "ERROR") (cons 'message "INVALID_VIEW_GEOMETRY"))
-        (progn
-          (setq document (vla-get-ActiveDocument (vlax-get-acad-object))
-                layouts (vla-get-Layouts document)
-                layout (vla-Item layouts (getvar "CTAB"))
-                layout-block (vla-get-Block layout)
-                configured nil)
-          (foreach spec view-specs
+        (if ok
+          (progn
             (setq role (zomo:role-name (zomo:alist-value 'role spec))
-                  rect (zomo:view-paper-rect spec role paper-rect)
+                  rect
+                    (vl-catch-all-apply 'zomo:view-paper-rect
+                      (list spec role paper-rect))
                   model-center (zomo:alist-value 'model-center spec)
+                  view-direction (zomo:alist-value 'view-direction spec)
+                  verifier (zomo:alist-value 'isolation-verifier spec)
                   handle (zomo:alist-value 'viewport-handle spec)
                   viewport (zomo:viewport-from-handle document handle))
-            (if (null viewport)
-              (progn
-                (setq viewport
-                  (vl-catch-all-apply 'vla-AddPViewport
-                    (list layout-block
-                      (zomo:pt3 (zomo:rect-center rect))
-                      (zomo:rect-width rect)
-                      (zomo:rect-height rect))))
-                (if (not (vl-catch-all-error-p viewport))
-                  (setq created (cons viewport created)))))
-            (if (or (vl-catch-all-error-p viewport) (null viewport))
-              (setq configured nil)
-              (progn
-                (setq result
-                  (zomo:configure-viewport viewport rect model-center custom-scale))
-                (if result
+            (cond
+              ((or (vl-catch-all-error-p rect)
+                   (not (zomo:valid-rect-p rect))
+                   (not (zomo:valid-model-center-p model-center)))
+                (setq ok nil message "INVALID_VIEW_GEOMETRY"))
+              ((not (zomo:valid-direction-p view-direction))
+                (setq ok nil message "VIEW_DIRECTION_REQUIRED"))
+              ((/= (type verifier) 'SYM)
+                (setq ok nil message "VIEW_ISOLATION_REQUIRED"))
+              (t
+                (setq state (if viewport (zomo:viewport-state viewport) nil))
+                (if (and viewport (null state))
+                  (setq ok nil message "VIEWPORT_SNAPSHOT_FAILED")
                   (progn
-                    (setq configured (cons viewport configured)
-                          handles (cons (cons role (vla-get-Handle viewport)) handles)))
-                  (setq configured nil)))))
-          (if (or (null configured) (/= 3 (length configured)))
+                    (if viewport
+                      (setq snapshots (cons (cons viewport state) snapshots)))
+                    (setq plans
+                      (cons
+                        (list
+                          (cons 'spec spec)
+                          (cons 'role role)
+                          (cons 'rect rect)
+                          (cons 'model-center model-center)
+                          (cons 'view-direction view-direction)
+                          (cons 'isolation-verifier verifier)
+                          (cons 'viewport viewport))
+                        plans)))))))))
+      (if (not ok)
+        (list (cons 'status "ERROR") (cons 'message message))
+        (progn
+          (setq created nil configured nil handles nil ok t message nil)
+          (foreach plan (reverse plans)
+            (if ok
+              (progn
+                (setq spec (zomo:alist-value 'spec plan)
+                      role (zomo:alist-value 'role plan)
+                      rect (zomo:alist-value 'rect plan)
+                      model-center (zomo:alist-value 'model-center plan)
+                      view-direction (zomo:alist-value 'view-direction plan)
+                      verifier (zomo:alist-value 'isolation-verifier plan)
+                      viewport (zomo:alist-value 'viewport plan))
+                (if (null viewport)
+                  (progn
+                    (setq result
+                      (vl-catch-all-apply 'vla-AddPViewport
+                        (list layout-block
+                          (zomo:pt3 (zomo:rect-center rect))
+                          (zomo:rect-width rect)
+                          (zomo:rect-height rect))))
+                    (if (vl-catch-all-error-p result)
+                      (setq ok nil message "VIEWPORT_CREATE_FAILED")
+                      (setq viewport result created (cons viewport created)))))
+                (if ok
+                  (if (null
+                        (zomo:configure-viewport
+                          viewport rect model-center view-direction custom-scale))
+                    (setq ok nil message "VIEWPORT_CONFIGURATION_FAILED")
+                    (if (not (zomo:verify-view-isolation verifier viewport spec))
+                      (setq ok nil message "VIEW_ISOLATION_FAILED")
+                      (setq configured (cons viewport configured)
+                            handles
+                              (cons (cons role (vla-get-Handle viewport)) handles))))))))
+          (if (and ok (= 3 (length configured)))
+            (if (not (zomo:lock-viewports configured))
+              (setq ok nil message "VIEWPORT_LOCK_FAILED"))
+            (if (null message) (setq ok nil message "VIEWPORT_CONFIGURATION_FAILED")))
+          (if ok
+            (list
+              (cons 'status "PASS")
+              (cons 'layout (vla-get-Name layout))
+              (cons 'custom-scale custom-scale)
+              (cons 'viewports (reverse handles)))
             (progn
-              (foreach viewport created
-                (vl-catch-all-apply 'vla-Delete (list viewport)))
-              (list (cons 'status "ERROR") (cons 'message "VIEWPORT_CONFIGURATION_FAILED")))
-            (progn
-              ;; Lock only after all three roles share the requested feasible scale.
-              (foreach viewport configured
-                (vla-put-CustomScale viewport custom-scale)
-                (vla-put-DisplayLocked viewport :vlax-true))
-              (list
-                (cons 'status "PASS")
-                (cons 'layout (vla-get-Name layout))
-                (cons 'custom-scale custom-scale)
-                (cons 'viewports (reverse handles))))))))))
+              (setq rollback-ok (zomo:rollback-viewports snapshots created))
+              (if rollback-ok
+                (list (cons 'status "ERROR") (cons 'message message))
+                (list
+                  (cons 'status "REVIEW")
+                  (cons 'message "VIEWPORT_ROLLBACK_UNCONFIRMED")
+                  (cons 'cause message))))))))))
 
 (princ)
