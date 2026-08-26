@@ -341,7 +341,8 @@
                                           (if attributes-restored
                                             "TITLE_INVARIANT_FAILED"
                                             "TITLE_ATTRIBUTE_RESTORE_FAILED"))))))))))))))))
-              (zomo:cleanup-objects exploded)
+              (if (not review-needed)
+                (zomo:cleanup-objects exploded))
               (setq exploded nil)
               (if (and success old-reference)
                 (progn

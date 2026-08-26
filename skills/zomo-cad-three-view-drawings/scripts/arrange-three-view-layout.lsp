@@ -140,7 +140,8 @@
   (foreach pair snapshots
     (if (not (zomo:restore-viewport-state (car pair) (cdr pair)))
       (setq ok nil)))
-  (foreach viewport created
+  (while (and created ok)
+    (setq viewport (car created) created (cdr created))
     (if (not (zomo:delete-created-viewport viewport))
       (setq ok nil)))
   ok)

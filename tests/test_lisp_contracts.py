@@ -210,6 +210,7 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("vla-put-direction", text)
         self.assertIn("view_isolation_required", text)
         self.assertIn("view_isolation_failed", text)
+        self.assertIn("(while (and created ok)", text)
         self.assertDefines(
             "arrange-three-view-layout.lsp",
             ("zomo:viewport-state", "zomo:restore-viewport-state"),
@@ -270,6 +271,10 @@ class LispContractTests(unittest.TestCase):
         )
         self.assertIn("new-bbox occupied-rects", text)
         self.assertIn("vlax-erased-p", text)
+        self.assertRegex(
+            text,
+            r"\(if\s+\(not\s+review-needed\)\s+\(zomo:cleanup-objects\s+exploded\)",
+        )
 
 
 if __name__ == "__main__":
