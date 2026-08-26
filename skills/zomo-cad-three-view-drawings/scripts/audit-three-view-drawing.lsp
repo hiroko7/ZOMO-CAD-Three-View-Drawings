@@ -361,7 +361,7 @@
   ok)
 
 (defun zomo:audit-nonempty-string-p (value)
-  (and (= (type value) 'STR) (> (strlen value) 0)))
+  (and (= (type value) 'STR) (> (strlen (vl-string-trim " \t" value)) 0)))
 
 (defun zomo:audit-canonical-path (path / found)
   (if (zomo:audit-nonempty-string-p path)
@@ -384,16 +384,33 @@
 
 (defun zomo:audit-isolation-pass-p (result / status)
   (cond
-    ((= result T) T)
+    ((eq result T) T)
     ((and (zomo:audit-alist-p result)
           (setq status (zomo:audit-value 'status result))
           (= (strcase (vl-princ-to-string status)) "PASS")) T)
     (T nil)))
 
+(defun zomo:audit-hex-string-p (value / index ok character)
+  (setq index 1 ok T)
+  (while (and ok (<= index (strlen value)))
+    (setq character (substr (strcase value) index 1))
+    (if (not (wcmatch character "[0-9A-F]")) (setq ok nil))
+    (setq index (1+ index)))
+  ok)
+
 (defun zomo:audit-checksum-p (value)
   (and (zomo:audit-nonempty-string-p value)
        (= (strlen value) 64)
-       (wcmatch (strcase value) "[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]*")))
+       (zomo:audit-hex-string-p value)))
+
+(defun zomo:audit-preset-artifact-checksum (pair / preset-artifact-resolver result)
+  ; A verified inspection/manifest artifact must resolve the checksum; self-attested text is rejected.
+  (setq preset-artifact-resolver (zomo:audit-value 'preset-artifact-resolver pair))
+  (if (= (type preset-artifact-resolver) 'SYM)
+    (progn
+      (setq result (vl-catch-all-apply preset-artifact-resolver (list pair)))
+      (if (vl-catch-all-error-p result) nil result))
+    nil))
 
 (defun zomo:audit-output-authorized-p (document output-path source-path preset-path / active saved output source preset full-result saved-result)
   ; Reject an authorized output path when it is also a source or preset path.
@@ -404,9 +421,8 @@
         output (zomo:audit-canonical-path output-path)
         source (zomo:audit-canonical-path source-path)
         preset (zomo:audit-canonical-path preset-path))
-  (and output active (= output active) (= saved :vlax-true)
-       (or (null source) (/= output source))
-       (or (null preset) (/= output preset))))
+  (and output active source preset (= output active) (eq saved :vlax-true)
+       (/= output source) (/= output preset)))
 
 (defun zomo:audit-all-equal-p (values / first ok item)
   (setq first (car values) ok T)
@@ -441,10 +457,17 @@
     (if (not (zomo:audit-nonempty-string-p value)) (setq ok nil)))
   ok)
 
-(defun zomo:audit-scale-text-matches-p (title actual-scale declared-text / value)
+(defun zomo:audit-scale-text-from-custom-scale (actual-scale / denominator)
+  (if (and (numberp actual-scale) (> actual-scale 0.0))
+    (progn (setq denominator (fix (+ (/ 1.0 actual-scale) 0.5)))
+           (strcat "1:" (itoa denominator)))
+    nil))
+
+(defun zomo:audit-scale-text-matches-p (title actual-scale declared-text / value canonical)
   (setq value (zomo:audit-title-attribute-value title "SCALE"))
-  (and (numberp actual-scale) (zomo:audit-nonempty-string-p declared-text)
-       (= (strcase value) (strcase declared-text))))
+  (setq canonical (zomo:audit-scale-text-from-custom-scale actual-scale))
+  (and canonical (= (strcase value) canonical)
+       (or (null declared-text) (= (strcase declared-text) canonical))))
 
 (defun zomo:audit-verified-dimension-evidence-p (evidence / verifier result)
   (setq verifier (zomo:audit-value 'dimension-verifier evidence)
@@ -464,8 +487,10 @@
     (setq members
       (cons (cons (vl-princ-to-string (car pair))
               (cond ((numberp value) (zomo:audit-json-number value))
-                    ((= value T) "true") ((null value) "false")
-                    (T (zomo:audit-json-string value)))) members)))
+                    ((eq value T) "true") ((null value) "false")
+                    ((= (type value) 'STR) (zomo:audit-json-string value))
+                    ((zomo:audit-alist-p value) (zomo:audit-measurements-json value))
+                    (T (zomo:audit-json-string (vl-princ-to-string value)))) ) members)))
   (zomo:audit-json-object (reverse members)))
 
 (defun zomo:audit-report-json (passed issues measurements / issue-json)
@@ -475,14 +500,32 @@
           (cons "issues" (zomo:audit-json-array issue-json))
           (cons "measurements" (zomo:audit-measurements-json measurements)))))
 
-(defun zomo:audit-write-report (path json / temp stream write-result close-result rename-result)
-  ; Atomic report publication: invalidate a previous report before preparing temp output,
-  ; so a failed attempt cannot leave a stale passed=true report for this drawing.
-  (if (not (zomo:audit-nonempty-string-p path))
+(defun zomo:audit-report-path-p (path / suffix)
+  (and (zomo:audit-nonempty-string-p path)
+       (> (strlen path) 5)
+       (= (strcase (substr path (- (strlen path) 4))) ".JSON")))
+
+(defun zomo:audit-safe-rename (from to / result)
+  (setq result (vl-catch-all-apply 'vl-file-rename (list from to)))
+  (and (not (vl-catch-all-error-p result)) result))
+
+(defun zomo:audit-report-distinct-p (report-path pairs / report pair protected ok)
+  (setq report (zomo:audit-canonical-path report-path) ok T)
+  (foreach pair pairs
+    (foreach protected (list (zomo:audit-value 'output-path pair)
+                             (zomo:audit-value 'source-path pair)
+                             (zomo:audit-value 'preset-path pair))
+      (if (= report (zomo:audit-canonical-path protected)) (setq ok nil))))
+  ok)
+
+(defun zomo:audit-write-report (path json / temp backup stream write-result close-result published restored)
+  ; Recoverable publication: a complete temp file is prepared before an existing
+  ; JSON report is renamed to a backup.  No DWG/source/preset file is deleted.
+  (if (not (zomo:audit-report-path-p path))
     (progn (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot open report path.") nil)
     (progn
-      (if (findfile path) (vl-file-delete path))
-      (setq temp (strcat path ".zomo-audit-tmp-" (itoa (getvar "MILLISECS")))
+      (setq temp (strcat path ".zomo-audit-tmp-" (itoa (getvar "MILLISECS")) ".json")
+            backup (strcat path ".zomo-audit-backup-" (itoa (getvar "MILLISECS")) ".json")
             stream (vl-catch-all-apply 'open (list temp "w" "utf8")))
       (cond
         ((or (null stream) (vl-catch-all-error-p stream))
@@ -491,18 +534,20 @@
           (setq write-result (vl-catch-all-apply 'write-line (list json stream))
                 close-result (vl-catch-all-apply 'close (list stream)))
           (if (or (vl-catch-all-error-p write-result) (vl-catch-all-error-p close-result))
-            (progn (if (findfile temp) (vl-file-delete temp))
-                   (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot write or close report.") nil)
+            (progn (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot write or close report.") nil)
             (progn
-              (setq rename-result (vl-catch-all-apply 'vl-file-rename (list temp path)))
-              (if (or (vl-catch-all-error-p rename-result) (not rename-result))
-                (progn (if (findfile temp) (vl-file-delete temp))
-                       (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot publish atomic report.") nil)
-                T))))))))
+              (if (and (findfile path) (not (zomo:audit-safe-rename path backup)))
+                (progn (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot protect prior report.") nil)
+                (progn
+                  (setq published (zomo:audit-safe-rename temp path))
+                  (if published T
+                    (progn
+                      (setq restored (if (findfile backup) (zomo:audit-safe-rename backup path) nil))
+                      (prompt "\nZOMO_AUDIT_THREE_VIEW_WRITE_ERROR: cannot publish report; prior report restored when possible.") nil)))))))))))
 
 (defun zomo:audit-strict-issues (document layout viewports pairs tolerance / roles vhandles thandles layout-handles
                                   paths output source preset active pair role viewport title scale text checksum actual provenance
-                                  evidence count issues scales exception verifier verifier-result)
+                                  evidence count issues scales exception verifier verifier-result resolved)
   (setq issues nil roles nil vhandles nil thandles nil paths nil scales nil
         layout-handles (zomo:audit-layout-handle-list viewports)
         active (zomo:audit-canonical-path (zomo:audit-safe-get document 'FullName nil)))
@@ -516,6 +561,7 @@
           checksum (zomo:audit-value 'preset-checksum pair)
           actual (zomo:audit-value 'actual-preset-checksum pair)
           provenance (zomo:audit-value 'preset-checksum-provenance pair)
+          resolved (zomo:audit-preset-artifact-checksum pair)
           scale (if viewport (zomo:audit-safe-get viewport 'CustomScale nil) nil)
           text (zomo:audit-value 'expected-scale-text pair)
           evidence (zomo:audit-value 'dimension-evidence pair)
@@ -530,9 +576,9 @@
       (setq issues (zomo:audit-add-issue issues "OUTPUT_SAVED" role "authorized output path, active FullName, Saved=true" "unauthorized output or unsaved active drawing" "ERROR")))
     (if (not (zomo:audit-isolation-pass-p (if (vl-catch-all-error-p verifier-result) nil verifier-result)))
       (setq issues (zomo:audit-add-issue issues "VIEW_ISOLATION" role "exact T or status PASS" "FAIL, REVIEW, malformed, or verifier error" "ERROR")))
-    (if (or (not (zomo:audit-checksum-p checksum)) (not (zomo:audit-checksum-p actual))
-            (/= checksum actual) (not (zomo:audit-nonempty-string-p provenance)))
-      (setq issues (zomo:audit-add-issue issues "PRESET_CHECKSUM" role "64-hex checksum with provenance" "missing, malformed, mismatched, or unproven" "ERROR")))
+    (if (or (not (zomo:audit-checksum-p checksum)) (not (zomo:audit-checksum-p resolved))
+            (/= checksum resolved) (not (zomo:audit-nonempty-string-p provenance)))
+      (setq issues (zomo:audit-add-issue issues "PRESET_CHECKSUM" role "64-hex checksum resolved from verified preset artifact" "missing, malformed, mismatched, or unproven" "ERROR")))
     (if (or (null title) (not (zomo:audit-title-attributes-filled-p title)))
       (setq issues (zomo:audit-add-issue issues "FRAME_ATTRIBUTES" role "required tags with non-empty values" "missing or blank" "ERROR")))
     (if (or (null title) (not (zomo:audit-scale-text-matches-p title scale text)))
@@ -572,18 +618,21 @@
             measurements (list (cons 'viewportCount (length viewports))
                                (cons 'viewTitlePairCount (length pairs))
                                (cons 'activeDocument (zomo:audit-safe-get document 'FullName ""))
-                               (cons 'saved (= (zomo:audit-safe-get document 'Saved :vlax-false) :vlax-true))
+                               (cons 'saved (eq (zomo:audit-safe-get document 'Saved :vlax-false) :vlax-true))
                                (cons 'visualExportStatus "NOT_VISUALLY_REVIEWED")))
       (list (cons 'issues issues) (cons 'measurements measurements)))))
 
 (defun zomo:audit-three-view (layout-name view-title-pairs report-path / result run issues measurements json passed)
   (cond
-    ((not (zomo:audit-nonempty-string-p report-path))
+    ((not (zomo:audit-report-path-p report-path))
       (setq issues (list (zomo:audit-issue "OUTPUT_SAVED" "REPORT" "report path is required" "missing or invalid" "ERROR"))
             measurements (list (cons 'reportPath ""))))
     ((or (not (zomo:audit-proper-list-p view-title-pairs))
          (not (vl-every 'zomo:audit-alist-p view-title-pairs)))
       (setq issues (list (zomo:audit-issue "VIEWPORT_COUNT" "ALL" "proper list of pair alists" "malformed input" "ERROR"))
+            measurements (list (cons 'reportPath report-path))))
+    ((not (zomo:audit-report-distinct-p report-path view-title-pairs))
+      (setq issues (list (zomo:audit-issue "OUTPUT_SAVED" "REPORT" "dedicated .json report path" "report path conflicts with DWG/source/preset/output" "ERROR"))
             measurements (list (cons 'reportPath report-path))))
     (T
       (setq result (vl-catch-all-apply 'zomo:audit-run (list layout-name view-title-pairs)))

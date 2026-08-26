@@ -531,7 +531,7 @@ class LispContractTests(unittest.TestCase):
             "output paths disagree",
             "viewport handles must exactly match layout",
             "front/side/plan exactly once",
-            "atomic report",
+            "recoverable publication",
             "vl-file-rename",
         ):
             with self.subTest(required=required):
@@ -545,7 +545,7 @@ class LispContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(isolation)
         body = isolation.group("body")
-        self.assertIn("(= result t)", body)
+        self.assertIn("(eq result t)", body)
         self.assertIn('"pass"', body)
         self.assertIn("zomo:audit-alist-p result", body)
 
@@ -555,7 +555,7 @@ class LispContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(checksum)
         self.assertIn("(= (strlen value) 64)", checksum.group("body"))
-        self.assertIn("wcmatch", checksum.group("body"))
+        self.assertIn("zomo:audit-hex-string-p", checksum.group("body"))
 
     def test_audit_report_measurements_remain_structured_until_json_boundary(self):
         text = self.read_script("audit-three-view-drawing.lsp").lower()
@@ -566,6 +566,19 @@ class LispContractTests(unittest.TestCase):
         self.assertIsNotNone(report)
         self.assertIn("zomo:audit-measurements-json", report.group("body"))
         self.assertIn("(cons 'measurements measurements)", text)
+
+    def test_audit_safety_uses_boolean_identity_and_recoverable_report_publish(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        self.assertIn("(eq result t)", text)
+        self.assertIn("(eq value t)", text)
+        self.assertNotIn("(= result t)", text)
+        self.assertNotIn("(= value t)", text)
+        self.assertIn("zomo:audit-report-path-p", text)
+        self.assertIn("zomo:audit-safe-rename", text)
+        self.assertIn("backup", text)
+        self.assertIn("zomo:audit-scale-text-from-custom-scale", text)
+        self.assertIn("zomo:audit-hex-string-p", text)
+        self.assertIn("preset-artifact-resolver", text)
 
 
 if __name__ == "__main__":
