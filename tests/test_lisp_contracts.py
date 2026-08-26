@@ -289,6 +289,27 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("(zomo:cleanup-objects exploded)", text)
         self.assertIn('(= cleanup-status "deleted")', text)
 
+    def test_static_title_rebuild_uses_safe_vla_identity_comparison(self):
+        text = self.read_script("rebuild-view-title-block.lsp").lower()
+        self.assertDefines(
+            "rebuild-view-title-block.lsp",
+            ("zomo:title-object-key", "zomo:title-same-object-p"),
+        )
+        identity = re.search(
+            r"\(defun\s+zomo:title-same-object-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(identity)
+        self.assertIn("zomo:title-object-key", identity.group("body"))
+        self.assertIn("vl-catch-all-apply", identity.group("body"))
+        self.assertIn("vla-get-handle", text)
+        self.assertIn("vla-get-objectid", text)
+        self.assertIn(":unknown", text)
+        self.assertIn("(eq same-object :unknown)", text)
+        self.assertNotRegex(text, r"\(/=\s*object\s+frame\)")
+        self.assertNotRegex(text, r"\(/=\s*frame\s+object\)")
+        self.assertEqual(text.count("zomo:title-same-object-p object frame"), 2)
+
     def test_static_title_rebuild_recreates_attribute_definitions_and_verifies_tags_values(self):
         text = self.read_script("rebuild-view-title-block.lsp").lower()
         self.assertDefines(

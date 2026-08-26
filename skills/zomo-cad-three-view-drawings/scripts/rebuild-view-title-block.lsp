@@ -100,6 +100,37 @@
         (vl-catch-all-apply 'vlax-put-property (list object property value)))
       (not (vl-catch-all-error-p result)))))
 
+(defun zomo:title-object-key (object / result)
+  ;; VLA objects are never compared with numeric/string operators. Prefer a
+  ;; stable handle and fall back to ObjectID when a handle is unavailable.
+  (if (= (type object) 'VLA-OBJECT)
+    (progn
+      (setq result (vl-catch-all-apply 'vla-get-Handle (list object)))
+      (if (and (not (vl-catch-all-error-p result))
+               (= (type result) 'STR)
+               result)
+        (cons 'HANDLE (strcase result))
+        (progn
+          (setq result (vl-catch-all-apply 'vla-get-ObjectID (list object)))
+          (if (or (vl-catch-all-error-p result) (null result))
+            nil
+            (cons 'OBJECTID result)))))
+    nil))
+
+(defun zomo:title-same-object-p (first second / result first-key second-key)
+  ;; Return :UNKNOWN on identity failure so callers stop rather than treating
+  ;; an unverified frame as ordinary content.
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+        (setq first-key (zomo:title-object-key first)
+              second-key (zomo:title-object-key second))
+        (if (and first-key second-key)
+          (equal first-key second-key)
+          :UNKNOWN))
+      nil))
+  (if (vl-catch-all-error-p result) :UNKNOWN result))
+
 (defun zomo:title-block-definition (blocks source / name result)
   (setq name (vl-catch-all-apply 'vla-get-Name (list source)))
   (if (vl-catch-all-error-p name)
@@ -347,24 +378,29 @@
           (vl-catch-all-apply 'vla-put-Coordinates (list frame data)))))))
 
 (defun zomo:title-shift-content (objects frame old-left old-right target-left target-right
-                                  / object bbox center shift midpoint result ok)
+                                  / object bbox center shift midpoint result ok same-object)
   (setq midpoint (/ (+ old-left old-right) 2.0) ok t)
   (foreach object objects
-    (if (and ok (/= object frame))
+    (if ok
       (progn
-        (setq bbox (zomo:bbox object))
-        (if bbox
-          (progn
-            (setq center (/ (+ (caar bbox) (caadr bbox)) 2.0)
-                  shift
-                    (if (<= center midpoint)
-                      (- target-left old-left)
-                      (- target-right old-right))
-                  result
-                    (vl-catch-all-apply 'vla-Move
-                      (list object (zomo:pt3 '(0.0 0.0 0.0))
-                                   (zomo:pt3 (list shift 0.0 0.0)))))
-            (if (vl-catch-all-error-p result) (setq ok nil)))))))
+        (setq same-object (zomo:title-same-object-p object frame))
+        (if (eq same-object :UNKNOWN)
+          (setq ok nil)
+          (if (not same-object)
+            (progn
+              (setq bbox (zomo:bbox object))
+              (if bbox
+                (progn
+                  (setq center (/ (+ (caar bbox) (caadr bbox)) 2.0)
+                        shift
+                          (if (<= center midpoint)
+                            (- target-left old-left)
+                            (- target-right old-right))
+                        result
+                          (vl-catch-all-apply 'vla-Move
+                            (list object (zomo:pt3 '(0.0 0.0 0.0))
+                                         (zomo:pt3 (list shift 0.0 0.0)))))
+                  (if (vl-catch-all-error-p result) (setq ok nil))))))))))
   ok)
 
 (defun zomo:title-move-to-local (objects base-coordinates / object result ok)
@@ -481,14 +517,19 @@
        (<= (cadadr inner) (+ (cadadr outer) tolerance))))
 
 (defun zomo:title-objects-contained-p (objects frame frame-bbox tolerance /
-                                        ok object bbox)
+                                         ok object bbox same-object)
   (setq ok t)
   (foreach object objects
-    (if (and ok (/= object frame))
+    (if ok
       (progn
-        (setq bbox (zomo:bbox object))
-        (if (not (zomo:bbox-contained-p bbox frame-bbox tolerance))
-          (setq ok nil)))))
+        (setq same-object (zomo:title-same-object-p object frame))
+        (if (eq same-object :UNKNOWN)
+          (setq ok nil)
+          (if (not same-object)
+            (progn
+              (setq bbox (zomo:bbox object))
+              (if (not (zomo:bbox-contained-p bbox frame-bbox tolerance))
+                (setq ok nil))))))))
   ok)
 
 (defun zomo:title-translate-bbox (bbox offset / minimum maximum)
