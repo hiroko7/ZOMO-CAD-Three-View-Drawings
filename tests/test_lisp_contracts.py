@@ -506,6 +506,67 @@ class LispContractTests(unittest.TestCase):
         self.assertRegex(text, r"\(vl-catch-all-apply\s+'write-line")
         self.assertRegex(text, r"\(vl-catch-all-apply\s+'close")
 
+    def test_audit_preflight_rejects_unproven_output_before_it_can_pass(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        self.assertDefines(
+            "audit-three-view-drawing.lsp",
+            (
+                "zomo:audit-proper-list-p",
+                "zomo:audit-alist-p",
+                "zomo:audit-canonical-path",
+                "zomo:audit-output-authorized-p",
+                "zomo:audit-roles-exact-p",
+                "zomo:audit-unique-p",
+                "zomo:audit-isolation-pass-p",
+                "zomo:audit-checksum-p",
+                "zomo:audit-measurements-json",
+            ),
+        )
+        for required in (
+            "vla-get-fullname",
+            "vla-get-saved",
+            "authorized output path",
+            "source or preset path",
+            "report path is required",
+            "output paths disagree",
+            "viewport handles must exactly match layout",
+            "front/side/plan exactly once",
+            "atomic report",
+            "vl-file-rename",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
+    def test_audit_policy_helpers_define_strict_pass_contracts(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        isolation = re.search(
+            r"\(defun\s+zomo:audit-isolation-pass-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(isolation)
+        body = isolation.group("body")
+        self.assertIn("(= result t)", body)
+        self.assertIn('"pass"', body)
+        self.assertIn("zomo:audit-alist-p result", body)
+
+        checksum = re.search(
+            r"\(defun\s+zomo:audit-checksum-p(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(checksum)
+        self.assertIn("(= (strlen value) 64)", checksum.group("body"))
+        self.assertIn("wcmatch", checksum.group("body"))
+
+    def test_audit_report_measurements_remain_structured_until_json_boundary(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        report = re.search(
+            r"\(defun\s+zomo:audit-report-json\s+(?P<body>[\s\S]*?)\n\s*\(defun",
+            text,
+        )
+        self.assertIsNotNone(report)
+        self.assertIn("zomo:audit-measurements-json", report.group("body"))
+        self.assertIn("(cons 'measurements measurements)", text)
+
 
 if __name__ == "__main__":
     unittest.main()
