@@ -7,6 +7,74 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "zomo-cad-three-view-drawings" / "scripts"
 
 
+def parse_lisp_forms(text):
+    """Parse enough AutoLISP to inspect executable forms, excluding comments."""
+    tokens = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char.isspace():
+            index += 1
+        elif char == ";":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+        elif char in "()'":
+            tokens.append(char)
+            index += 1
+        elif char == '"':
+            end = index + 1
+            escaped = False
+            while end < len(text):
+                current = text[end]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    break
+                end += 1
+            if end >= len(text):
+                raise AssertionError("unterminated AutoLISP string")
+            tokens.append(text[index : end + 1])
+            index = end + 1
+        else:
+            end = index
+            while end < len(text) and not text[end].isspace() and text[end] not in "();'\"":
+                end += 1
+            tokens.append(text[index:end].lower())
+            index = end
+
+    def parse_one(position):
+        token = tokens[position]
+        if token == "(":
+            result = []
+            position += 1
+            while tokens[position] != ")":
+                item, position = parse_one(position)
+                result.append(item)
+            return result, position + 1
+        if token == "'":
+            quoted, position = parse_one(position + 1)
+            return ["quote", quoted], position
+        if token == ")":
+            raise AssertionError("unexpected ')' in AutoLISP")
+        return token, position + 1
+
+    forms = []
+    position = 0
+    while position < len(tokens):
+        form, position = parse_one(position)
+        forms.append(form)
+    return forms
+
+
+def walk_lisp(form):
+    if isinstance(form, list):
+        yield form
+        for item in form:
+            yield from walk_lisp(item)
+
+
 class LispContractTests(unittest.TestCase):
     def read_script(self, filename):
         path = SCRIPTS / filename
@@ -18,6 +86,17 @@ class LispContractTests(unittest.TestCase):
         for name in names:
             with self.subTest(name=name):
                 self.assertIn(f"(defun {name.lower()}", text)
+
+    def lisp_defuns(self, filename):
+        forms = parse_lisp_forms(self.read_script(filename))
+        return {
+            form[1]: form
+            for form in forms
+            if isinstance(form, list) and len(form) >= 4 and form[:1] == ["defun"]
+        }
+
+    def lisp_calls(self, form, name):
+        return [node for node in walk_lisp(form) if node and node[0] == name.lower()]
 
     def assertBalancedParentheses(self, filename):
         text = self.read_script(filename)
@@ -500,9 +579,10 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("\\u00", text)
         self.assertRegex(
             text,
-            r'\(vl-catch-all-apply\s+\'open\s+\(list\s+path\s+"w"\s+"utf8"\)\)',
+            r'\(vl-catch-all-apply\s+\'open\s+\(list\s+temp\s+"w"\s+"utf8"\)\)',
         )
-        self.assertIn("zomo_audit_three_view_write_error", text)
+        self.assertIn('"temp_open_failed"', text)
+        self.assertIn('"temp_write_failed"', text)
         self.assertRegex(text, r"\(vl-catch-all-apply\s+'write-line")
         self.assertRegex(text, r"\(vl-catch-all-apply\s+'close")
 
@@ -531,7 +611,7 @@ class LispContractTests(unittest.TestCase):
             "output paths disagree",
             "viewport handles must exactly match layout",
             "front/side/plan exactly once",
-            "recoverable publication",
+            "zomo:audit-publication-result",
             "vl-file-rename",
         ):
             with self.subTest(required=required):
@@ -590,12 +670,108 @@ class LispContractTests(unittest.TestCase):
         self.assertIn("(eq (zomo:audit-value 'layer-visible evidence) t)", text)
         self.assertIn("(eq (zomo:audit-value 'viewport-contained evidence) t)", text)
 
-    def test_audit_publication_boundary_returns_structured_statuses(self):
-        text = self.read_script("audit-three-view-drawing.lsp").lower()
-        for status in ("published", "publish_failed_restored", "recovery_failed"):
-            self.assertIn(status, text)
-        self.assertIn("protected-paths", text)
-        self.assertIn("zomo:audit-report-safe-to-write-p", text)
+    def test_audit_writer_guards_protected_paths_before_any_filesystem_side_effect(self):
+        defuns = self.lisp_defuns("audit-three-view-drawing.lsp")
+        writer = defuns["zomo:audit-write-report"]
+        self.assertEqual(writer[2][:3], ["path", "json", "protected-paths"])
+        guard = writer[3]
+        self.assertEqual(guard[0], "if")
+        self.assertEqual(
+            guard[1],
+            ["not", ["zomo:audit-report-safe-to-write-p", "path", "protected-paths"]],
+        )
+        rejected_branch = guard[2]
+        rejected_calls = {node[0] for node in walk_lisp(rejected_branch) if node}
+        self.assertTrue({"zomo:audit-publication-result"}.issubset(rejected_calls))
+        self.assertTrue(
+            rejected_calls.isdisjoint(
+                {"open", "vl-file-rename", "vl-file-delete", "zomo:audit-unique-temp-path"}
+            )
+        )
+
+    def test_audit_publication_boundary_returns_structured_status_branches(self):
+        defuns = self.lisp_defuns("audit-three-view-drawing.lsp")
+        result = defuns["zomo:audit-publication-result"]
+        result_keys = {
+            call[1][1]
+            for call in self.lisp_calls(result, "cons")
+            if len(call) >= 3 and isinstance(call[1], list) and call[1][:1] == ["quote"]
+        }
+        self.assertEqual(result_keys, {"status", "target", "temp", "backup", "error"})
+
+        writer = defuns["zomo:audit-write-report"]
+        statuses = {
+            call[1]
+            for call in self.lisp_calls(writer, "zomo:audit-publication-result")
+            if len(call) >= 3
+        }
+        self.assertEqual(
+            statuses,
+            {'"PUBLISHED"', '"PUBLISH_FAILED_RESTORED"', '"RECOVERY_FAILED"'},
+        )
+        restored_branches = [
+            node for node in walk_lisp(writer) if node[:2] == ["if", "restored"]
+        ]
+        self.assertEqual(len(restored_branches), 1)
+        self.assertTrue(
+            self.lisp_calls(restored_branches[0][2], "zomo:audit-publication-result")
+        )
+        self.assertTrue(
+            self.lisp_calls(restored_branches[0][3], "zomo:audit-publication-result")
+        )
+
+    def test_audit_main_validates_pairs_once_and_routes_publication_statuses(self):
+        defuns = self.lisp_defuns("audit-three-view-drawing.lsp")
+        main = defuns["zomo:audit-three-view"]
+        self.assertEqual(len(self.lisp_calls(main, "zomo:audit-report-safe-to-write-p")), 1)
+        writer_calls = self.lisp_calls(main, "zomo:audit-write-report")
+        self.assertEqual(writer_calls, [["zomo:audit-write-report", "report-path", "json", "protected-paths"]])
+        status_checks = {
+            call[2]
+            for call in self.lisp_calls(main, "=")
+            if len(call) == 3 and call[1] == "publication-status"
+        }
+        self.assertEqual(
+            status_checks,
+            {'"PUBLISHED"', '"PUBLISH_FAILED_RESTORED"', '"RECOVERY_FAILED"'},
+        )
+        recovery_issues = [
+            call
+            for call in self.lisp_calls(main, "zomo:audit-add-issue")
+            if len(call) > 2 and call[2] == '"RECOVERY_FAILED"'
+        ]
+        self.assertEqual(len(recovery_issues), 1)
+
+        safe = defuns["zomo:audit-report-safe-to-write-p"]
+        self.assertTrue(self.lisp_calls(safe, "zomo:audit-canonical-path-list-p"))
+        self.assertFalse(self.lisp_calls(safe, "foreach"))
+        self.assertFalse(self.lisp_calls(safe, "assoc"))
+
+    def test_audit_removes_legacy_writers_and_manages_unique_artifacts(self):
+        defuns = self.lisp_defuns("audit-three-view-drawing.lsp")
+        for removed in (
+            "zomo:audit-report-json-legacy",
+            "zomo:audit-write-report-legacy",
+            "zomo:audit-three-view-legacy",
+        ):
+            self.assertNotIn(removed, defuns)
+        core = defuns["zomo:audit-core-checks"]
+        core_calls = {node[0] for node in walk_lisp(core) if node}
+        self.assertTrue(core_calls.isdisjoint({"open", "write-line", "close", "vl-file-rename"}))
+
+        writer = defuns["zomo:audit-write-report"]
+        self.assertEqual(len(self.lisp_calls(writer, "zomo:audit-unique-temp-path")), 1)
+        self.assertTrue(self.lisp_calls(writer, "zomo:audit-safe-delete-artifact"))
+        strict = defuns["zomo:audit-strict-issues"]
+        strict_atoms = {item for node in walk_lisp(strict) for item in node if isinstance(item, str)}
+        self.assertNotIn("actual-preset-checksum", strict_atoms)
+
+        scale = defuns["zomo:audit-scale-text-from-custom-scale"]
+        scale_strings = {
+            item for node in walk_lisp(scale) for item in node if isinstance(item, str) and item.startswith('"')
+        }
+        self.assertIn('"1:"', scale_strings)
+        self.assertIn('":1"', scale_strings)
 
 
 if __name__ == "__main__":
