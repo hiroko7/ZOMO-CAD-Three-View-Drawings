@@ -3,7 +3,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "skills" / "zomo-cad-three-view-drawings"
+SKILL = ROOT
 
 
 class SkillPackageTests(unittest.TestCase):

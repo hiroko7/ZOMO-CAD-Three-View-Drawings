@@ -4,7 +4,7 @@ import json
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / "skills" / "zomo-cad-three-view-drawings" / "assets"
+ASSETS = ROOT / "assets"
 
 
 class PresetManifestTests(unittest.TestCase):

@@ -4,7 +4,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "skills" / "zomo-cad-three-view-drawings" / "scripts"
+SCRIPTS = ROOT / "scripts"
 
 
 def parse_lisp_forms(text):
