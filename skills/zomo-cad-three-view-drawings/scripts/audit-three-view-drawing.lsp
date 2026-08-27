@@ -3,6 +3,9 @@
 ; Save-preflight audit for a paper-space front / side / plan drawing.
 ; Load zomo-common.lsp first.  Each view-title-pairs item is an alist containing
 ; role, viewport-handle, title-handle and, when applicable, isolation-verifier,
+; required-title-tags and scale-attribute-tag.  Attribute overrides are optional:
+; when omitted, the auditor validates the attributes discovered on the preset block
+; and finds the canonical scale text in any attribute value.
 ; expected-scale, preset-checksum, actual-preset-checksum, output-path and
 ; visual-export-path.  The audit never saves, exports, or changes the drawing.
 
@@ -141,18 +144,19 @@
         (setq result (cons object result)))))
   (reverse result))
 
-(defun zomo:audit-expected-title-tags ()
-  '("PROJECT_NAME" "DRAWING_TITLE" "DATE" "SCALE" "DESIGN" "DRAWN" "CHECKED" "VERSION"))
+(defun zomo:audit-required-attribute-tags (pair key)
+  (zomo:audit-value key pair))
 
-(defun zomo:audit-title-tags-present-p (title / attributes attribute tags tag expected ok)
+(defun zomo:audit-title-tags-present-p (title required-tags / attributes attribute tags tag expected ok)
   (setq attributes (zomo:get-attributes title)
         tags nil)
   (foreach attribute attributes
     (setq tag (strcase (zomo:audit-safe-get attribute 'TagString ""))
           tags (cons tag tags)))
-  (setq ok T)
-  (foreach expected (zomo:audit-expected-title-tags)
-    (if (not (member expected tags)) (setq ok nil)))
+  (setq ok (and attributes T))
+  (if required-tags
+    (foreach expected required-tags
+      (if (not (member (strcase expected) tags)) (setq ok nil))))
   ok)
 
 (defun zomo:audit-title-unit-scale-p (title tolerance)
@@ -265,8 +269,10 @@
           (setq issues (zomo:audit-add-issue issues "TITLE_VIEWPORT_WIDTH" role "same width" "different width" "ERROR")))))
     (if (or (null title) (not (zomo:audit-title-unit-scale-p title tolerance)))
       (setq issues (zomo:audit-add-issue issues "TITLE_UNIFORM_SCALE" role "1/1/1" "not 1/1/1" "ERROR")))
-    (if (or (null title) (not (zomo:audit-title-tags-present-p title)))
-      (setq issues (zomo:audit-add-issue issues "FRAME_ATTRIBUTES" role "all required frame attributes" "missing attributes" "ERROR")))
+    (if (or (null title)
+            (not (zomo:audit-title-tags-present-p title
+                   (zomo:audit-required-attribute-tags pair 'required-title-tags))))
+      (setq issues (zomo:audit-add-issue issues "FRAME_ATTRIBUTES" role "preset-derived title attributes" "missing attributes" "ERROR")))
     (setq title-rects (cons (cons role title-rect) title-rects))
     (setq expected-checksum (zomo:audit-value 'preset-checksum pair)
           actual-checksum (zomo:audit-value 'actual-preset-checksum pair))
@@ -416,11 +422,16 @@
       (setq value (zomo:audit-safe-get attribute 'TextString ""))))
   value)
 
-(defun zomo:audit-title-attributes-filled-p (title / tag value ok)
-  (setq ok T)
-  (foreach tag (zomo:audit-expected-title-tags)
-    (setq value (zomo:audit-title-attribute-value title tag))
-    (if (not (zomo:audit-nonempty-string-p value)) (setq ok nil)))
+(defun zomo:audit-title-attributes-filled-p (title required-tags / attributes attribute tag value ok)
+  (setq attributes (zomo:get-attributes title)
+        ok (and attributes T))
+  (if required-tags
+    (foreach tag required-tags
+      (setq value (zomo:audit-title-attribute-value title (strcase tag)))
+      (if (not (zomo:audit-nonempty-string-p value)) (setq ok nil)))
+    (foreach attribute attributes
+      (setq value (zomo:audit-safe-get attribute 'TextString ""))
+      (if (not (zomo:audit-nonempty-string-p value)) (setq ok nil))))
   ok)
 
 (defun zomo:audit-scale-text-from-custom-scale (actual-scale / denominator numerator)
@@ -432,11 +443,16 @@
              (strcat (itoa numerator) ":1")))
     nil))
 
-(defun zomo:audit-scale-text-matches-p (title actual-scale declared-text / value canonical)
-  (setq value (zomo:audit-title-attribute-value title "SCALE"))
+(defun zomo:audit-scale-text-matches-p (title actual-scale declared-text scale-tag / attributes attribute value canonical found)
   (setq canonical (zomo:audit-scale-text-from-custom-scale actual-scale))
-  (and canonical (= (strcase value) canonical)
-       (or (null declared-text) (= (strcase declared-text) canonical))))
+  (setq value (if scale-tag (zomo:audit-title-attribute-value title (strcase scale-tag)) nil)
+        found (and value (wcmatch (strcase value) (strcat "*" canonical "*"))))
+  (if (and canonical (not scale-tag))
+    (foreach attribute (zomo:get-attributes title)
+      (setq value (zomo:audit-safe-get attribute 'TextString ""))
+      (if (wcmatch (strcase value) (strcat "*" canonical "*")) (setq found T))))
+  (and canonical found
+       (or (null declared-text) (wcmatch (strcase declared-text) (strcat "*" canonical "*")))))
 
 (defun zomo:audit-verified-dimension-evidence-p (evidence / verifier result)
   (setq verifier (zomo:audit-value 'dimension-verifier evidence)
@@ -589,9 +605,11 @@
     (if (or (not (zomo:audit-checksum-p checksum)) (not (zomo:audit-checksum-p resolved))
             (/= checksum resolved) (not (zomo:audit-nonempty-string-p provenance)))
       (setq issues (zomo:audit-add-issue issues "PRESET_CHECKSUM" role "64-hex checksum resolved from verified preset artifact" "missing, malformed, mismatched, or unproven" "ERROR")))
-    (if (or (null title) (not (zomo:audit-title-attributes-filled-p title)))
-      (setq issues (zomo:audit-add-issue issues "FRAME_ATTRIBUTES" role "required tags with non-empty values" "missing or blank" "ERROR")))
-    (if (or (null title) (not (zomo:audit-scale-text-matches-p title scale text)))
+    (if (or (null title) (not (zomo:audit-title-attributes-filled-p title
+                                  (zomo:audit-required-attribute-tags pair 'required-title-tags))))
+      (setq issues (zomo:audit-add-issue issues "FRAME_ATTRIBUTES" role "preset-derived attributes with non-empty values" "missing or blank" "ERROR")))
+    (if (or (null title) (not (zomo:audit-scale-text-matches-p title scale text
+                                  (zomo:audit-value 'scale-attribute-tag pair))))
       (setq issues (zomo:audit-add-issue issues "VIEWPORT_SCALE" role "SCALE text matches actual CustomScale" "missing or mismatched" "ERROR")))
     (cond
       ((or (not (zomo:audit-alist-p evidence)) (not (numberp count)))

@@ -537,6 +537,18 @@ class LispContractTests(unittest.TestCase):
     def test_audit_contract(self):
         self.assertDefines("audit-three-view-drawing.lsp", ("zomo:audit-three-view",))
 
+    def test_audit_uses_preset_derived_attributes_instead_of_company_specific_english_tags(self):
+        text = self.read_script("audit-three-view-drawing.lsp").lower()
+        for hardcoded in (
+            '"project_name"', '"drawing_title"', '"date"', '"design"',
+            '"drawn"', '"checked"', '"version"',
+        ):
+            self.assertNotIn(hardcoded, text)
+        self.assertIn("required-title-tags", text)
+        self.assertIn("scale-attribute-tag", text)
+        self.assertIn("zomo:get-attributes title", text)
+        self.assertIn("wcmatch", text)
+
     def test_audit_covers_all_quality_checklist_invariants_and_honest_visual_status(self):
         text = self.read_script("audit-three-view-drawing.lsp").lower()
         required_codes = (
