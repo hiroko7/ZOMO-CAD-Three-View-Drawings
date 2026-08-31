@@ -2,5 +2,10 @@
   "version": "2026.08-v1",
   "filename": "ZOMO-CAD-Preset.dwg",
   "sha256": "ce8e8c7a9bb4b99b59781c0bf2607f6f2a930cdb5aecf02caef0b74a5b67b57f",
-  "source_label": "ZOMO company CAD preset"
+  "source_label": "ZOMO company CAD preset",
+  "plot_style": {
+    "filename": "黑白2.ctb",
+    "sha256": "c43e3025e036a1ab53eab2777592510bc3bc0198817b269ce56b290571048d47",
+    "source_label": "ZOMO baseline monochrome plot style"
+  }
 }

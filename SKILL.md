@@ -25,13 +25,17 @@ description: 当用户需要把 Rhino、SketchUp、3DM、SKP 或 DWG 模型制�
 - SketchUp/SKP：读取 `references/sketchup-workflow.md`。
 - 已有二维 DWG：跳过模型投影，直接进入 CAD 清理。
 - 需要刷线：读取 `references/cad-layer-and-linetype-rules.md`。
+- 需要尺寸或材质标注：读取 `references/annotation-and-dimension-rules.md`。
 - 需要材质工艺判断：读取 `references/material-evidence-rules.md`。
 - 需要布局或图名块：读取 `references/layout-and-title-block-rules.md`。
+- 需要打印预览或最终出图：读取 `references/print-preview-rules.md`。
 - 保存前：读取 `references/quality-checklist.md`。
 
 ## Shared workflow
 
-复制预设 → 读取标准 → 生成/清理三视图 → 语义分层 → 尺寸与材料证据 → 三视口布局 → 图名块和图框属性 → 审计 → 授权保存。
+复制预设 → 读取标准和项目证据 → 生成/清理三视图 → 语义分层 → 按视口比例完成分级尺寸与材料标注 → 三视口布局 → 图名块和图框属性 → 以 `黑白2.ctb` 打印预览并审计 → 授权保存。
+
+执行过程中以产出一张可打印、可施工核查的三视图施工图为唯一主线。每一步都必须能对应到最终图纸中的视图、线稿、尺寸、材料标注、图名块、图框或打印检查；诊断、脚本调整和中间测试只服务于这些交付项，不得演变成无关的软件配置、反复试验或旁支任务。遇到局部错误时优先定位并修改错误对象或属性，不重建已经正确的部分。
 
 ## Stop conditions
 
