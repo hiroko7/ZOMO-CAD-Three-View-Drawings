@@ -270,7 +270,6 @@ class LispContractTests(unittest.TestCase):
             "vla-put-center",
             "vla-put-width",
             "vla-put-height",
-            "vla-put-viewcenter",
             "vla-put-customscale",
             "vla-put-displaylocked",
         ):
@@ -281,6 +280,20 @@ class LispContractTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
         self.assertIn("vla-get-modeltype", text)
         self.assertIn("paper_layout_required", text)
+
+    def test_static_three_view_layout_centers_model_through_active_viewport_zoom(self):
+        text = self.read_script("arrange-three-view-layout.lsp").lower()
+        self.assertDefines(
+            "arrange-three-view-layout.lsp",
+            ("zomo:activate-paper-viewport", "zomo:zoom-viewport-center"),
+        )
+        self.assertIn("vla-put-activepviewport", text)
+        self.assertIn("vla-put-mspace", text)
+        self.assertIn("vl-catch-all-apply 'command-s", text)
+        self.assertIn('(list "_.zoom" "_c"', text)
+        self.assertNotIn("vl-cmdf", text)
+        self.assertNotIn("vla-put-viewcenter", text)
+        self.assertNotIn("vla-put-viewtarget", text)
 
     def test_static_three_view_layout_requires_direction_isolation_and_rollback(self):
         text = self.read_script("arrange-three-view-layout.lsp").lower()
@@ -298,8 +311,6 @@ class LispContractTests(unittest.TestCase):
             "center",
             "width",
             "height",
-            "viewcenter",
-            "viewtarget",
             "customscale",
             "displaylocked",
             "viewporton",

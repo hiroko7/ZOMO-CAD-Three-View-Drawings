@@ -129,16 +129,16 @@
     nil))
 
 (defun zomo:viewport-state (viewport / result)
-  ;; Capture every property changed by this script before touching an existing viewport.
+  ;; Keep the raw viewport entity data for rollback. AutoCAD 2022 does not
+  ;; expose ViewCenter/ViewTarget reliably through the PViewport COM wrapper.
   (setq result
     (vl-catch-all-apply
       '(lambda ()
         (list
+          (cons 'EntityData (entget (vlax-vla-object->ename viewport)))
           (cons 'Center (vla-get-Center viewport))
           (cons 'Width (vla-get-Width viewport))
           (cons 'Height (vla-get-Height viewport))
-          (cons 'ViewCenter (vla-get-ViewCenter viewport))
-          (cons 'ViewTarget (vla-get-ViewTarget viewport))
           (cons 'CustomScale (vla-get-CustomScale viewport))
           (cons 'DisplayLocked (vla-get-DisplayLocked viewport))
           (cons 'ViewportOn (vla-get-ViewportOn viewport))
@@ -151,15 +151,8 @@
     (vl-catch-all-apply
       '(lambda ()
         (vla-put-DisplayLocked viewport :vlax-false)
-        (vla-put-Center viewport (zomo:alist-value 'Center state))
-        (vla-put-Width viewport (zomo:alist-value 'Width state))
-        (vla-put-Height viewport (zomo:alist-value 'Height state))
-        (vla-put-ViewCenter viewport (zomo:alist-value 'ViewCenter state))
-        (vla-put-ViewTarget viewport (zomo:alist-value 'ViewTarget state))
-        (vla-put-Direction viewport (zomo:alist-value 'Direction state))
-        (vla-put-CustomScale viewport (zomo:alist-value 'CustomScale state))
-        (vla-put-ViewportOn viewport (zomo:alist-value 'ViewportOn state))
-        (vla-put-DisplayLocked viewport (zomo:alist-value 'DisplayLocked state))
+        (entmod (zomo:alist-value 'EntityData state))
+        (entupd (vlax-vla-object->ename viewport))
         t)
       nil))
   (and (not (vl-catch-all-error-p result)) result))
@@ -179,27 +172,44 @@
       (setq ok nil)))
   ok)
 
-(defun zomo:configure-viewport (viewport rect model-center view-direction custom-scale / result)
+(defun zomo:activate-paper-viewport (document viewport / result)
   (setq result
     (vl-catch-all-apply
       '(lambda ()
-        (vla-put-DisplayLocked viewport :vlax-false)
-        (vla-put-ViewportOn viewport :vlax-true)
-        (vla-put-Center viewport (zomo:pt3 (zomo:rect-center rect)))
-        (vla-put-Width viewport (zomo:rect-width rect))
-        (vla-put-Height viewport (zomo:rect-height rect))
-        (vla-put-ViewCenter viewport
-          (vlax-2d-point (list (float (car model-center)) (float (cadr model-center)))))
-        (vla-put-ViewTarget viewport
-          (zomo:pt3
-            (list (float (car model-center))
-                  (float (cadr model-center))
-                  (float (if (caddr model-center) (caddr model-center) 0.0)))))
-        (vla-put-Direction viewport (zomo:pt3 view-direction))
-        (vla-put-CustomScale viewport custom-scale)
-        viewport)
+        (vla-put-ActivePViewport document viewport)
+        (vla-put-MSpace document :vlax-true)
+        t)
       nil))
-  (if (vl-catch-all-error-p result) nil result))
+  (and (not (vl-catch-all-error-p result)) result))
+
+(defun zomo:zoom-viewport-center (document viewport model-center view-height / result)
+  (if (zomo:activate-paper-viewport document viewport)
+    (setq result
+      (vl-catch-all-apply 'command-s
+        (list "_.ZOOM" "_C"
+          (list (float (car model-center)) (float (cadr model-center)))
+          (float view-height))))
+    (setq result nil))
+  (if (= :vlax-true (vla-get-MSpace document))
+    (vla-put-MSpace document :vlax-false))
+  (not (vl-catch-all-error-p result)))
+
+(defun zomo:call-ok (function arguments / result)
+  (setq result (vl-catch-all-apply function arguments))
+  (not (vl-catch-all-error-p result)))
+
+(defun zomo:configure-viewport (document viewport rect model-center view-direction custom-scale)
+  (and
+    (zomo:call-ok 'vla-put-DisplayLocked (list viewport :vlax-false))
+    (zomo:call-ok 'vla-put-ViewportOn (list viewport :vlax-true))
+    (zomo:call-ok 'vla-put-Center (list viewport (zomo:pt3 (zomo:rect-center rect))))
+    (zomo:call-ok 'vla-put-Width (list viewport (zomo:rect-width rect)))
+    (zomo:call-ok 'vla-put-Height (list viewport (zomo:rect-height rect)))
+    (zomo:call-ok 'vla-put-Direction (list viewport (zomo:pt3 view-direction)))
+    (zomo:call-ok 'vla-put-CustomScale (list viewport custom-scale))
+    (zomo:zoom-viewport-center document viewport model-center
+      (/ (zomo:rect-height rect) custom-scale))
+    viewport))
 
 (defun zomo:verify-view-isolation (verifier viewport spec / result)
   ;; The caller-supplied verifier must confirm role-specific layer/scene isolation.
@@ -311,7 +321,7 @@
                 (if ok
                   (if (null
                         (zomo:configure-viewport
-                          viewport rect model-center view-direction custom-scale))
+                          document viewport rect model-center view-direction custom-scale))
                     (setq ok nil message "VIEWPORT_CONFIGURATION_FAILED")
                     (if (not (zomo:verify-view-isolation verifier viewport spec))
                       (setq ok nil message "VIEW_ISOLATION_FAILED")
